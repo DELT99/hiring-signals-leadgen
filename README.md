@@ -9,6 +9,23 @@ A job post means a company has a need right now. One engine, two modes:
 | **Find clients** | Dev agencies, freelancers, recruiters, outsourcing firms | "This company might buy my services" | Finds a decision-maker (CTO, founder, HR) on LinkedIn |
 | **Find jobs for me** | Job seekers | "This job might fit me" | Scores the job against your CV and gives a tailoring tip |
 
+## Just want to use it?
+
+**You only need two things from this repo:**
+
+1. [`workflow/hiring-signal-lead-engine.json`](workflow/hiring-signal-lead-engine.json): the workflow. Download it (open the file → **Download raw file**) and import it in n8n via **⋯ → Import from File**.
+2. [`sheets/`](sheets): the header rows for your Google Sheet's `Leads` and `Run Log` tabs.
+
+Then follow [Setup](#setup) to connect your credentials. You can ignore everything else in the repo (`src/`, `scripts/`, `tests/`). It's only needed if you want to change the code; see [Development](#development).
+
+| Path | What it is | Needed to run? |
+|---|---|---|
+| `workflow/*.json` | The n8n workflow | ✅ Yes |
+| `sheets/*.csv` | Sheet header rows | ✅ Once, for setup |
+| `src/nodes/*.js` | Readable source of each Code node (already inside the JSON) | ❌ Dev only |
+| `scripts/build_workflow.py` | Rebuilds the JSON from `src/nodes/` | ❌ Dev only |
+| `tests/simulate.js` | Offline test with mocked APIs | ❌ Dev only |
+
 ## Features
 
 - **Searches several boards**: LinkedIn Jobs, Rozee.pk, Indeed, Bayt, Greenhouse, Lever, or any website. It does this through Firecrawl's search API. It doesn't log in anywhere or scrape LinkedIn itself.
