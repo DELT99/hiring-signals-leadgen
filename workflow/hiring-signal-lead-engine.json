@@ -1,0 +1,1518 @@
+{
+  "name": "Hiring Signal Lead Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Hiring Signal Lead Engine",
+        "formDescription": "Find companies that are hiring (as sales leads) or jobs that fit you. Results go to the Leads tab of your Google Sheet.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Mode",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Find clients (companies that are hiring)"
+                  },
+                  {
+                    "option": "Find jobs for me"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Your name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Role or skill keywords",
+              "requiredField": true,
+              "placeholder": "e.g. Flutter developer, Mobile app developer"
+            },
+            {
+              "fieldLabel": "Location",
+              "requiredField": true,
+              "placeholder": "e.g. Lahore / Karachi / Remote"
+            },
+            {
+              "fieldLabel": "Job boards",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "LinkedIn Jobs"
+                  },
+                  {
+                    "option": "Rozee.pk"
+                  },
+                  {
+                    "option": "Indeed"
+                  },
+                  {
+                    "option": "Bayt"
+                  },
+                  {
+                    "option": "Greenhouse"
+                  },
+                  {
+                    "option": "Lever"
+                  },
+                  {
+                    "option": "Any website"
+                  }
+                ]
+              },
+              "multiselect": true
+            },
+            {
+              "fieldLabel": "Posted within",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Past week"
+                  },
+                  {
+                    "option": "Past 24 hours"
+                  },
+                  {
+                    "option": "Past month"
+                  },
+                  {
+                    "option": "Any time"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "What you offer / your CV summary",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "Clients mode: what your company sells. Jobs mode: your skills, experience and what you want."
+            },
+            {
+              "fieldLabel": "Ranking method",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "AI ranking (Gemini)"
+                  },
+                  {
+                    "option": "Keyword ranking (no AI)"
+                  },
+                  {
+                    "option": "No ranking (save all)"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Minimum fit score (1-5)",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "3"
+                  },
+                  {
+                    "option": "4"
+                  },
+                  {
+                    "option": "5"
+                  },
+                  {
+                    "option": "2"
+                  },
+                  {
+                    "option": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Find a decision-maker? (clients mode)",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Yes"
+                  },
+                  {
+                    "option": "No"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Maximum leads",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "10"
+                  },
+                  {
+                    "option": "25"
+                  },
+                  {
+                    "option": "50"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "48978bdb-1f30-51a8-a210-0a9640521983",
+      "name": "Lead Intake Form",
+      "webhookId": "36f903af-5c9c-5b92-b3f9-fe59fd4cd78d",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "08126e05-251b-571f-9888-c7447079053e",
+      "name": "Load Existing Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Init Run State\n// Reads the form, sets up configuration and the loop's state object.\n// Edit CONFIG below to tune the workflow without touching other nodes.\n\nconst CONFIG = {\n  aiModel: 'gemini-3.7-flash',      // any Gemini model that supports generateContent\n  aiMinIntervalMs: 4500,            // minimum gap between Gemini calls (free-tier friendly)\n  firecrawlDelayMs: 700,            // pause between Firecrawl searches\n  maxConsecutiveApiErrors: 3,       // stop the run if Firecrawl keeps failing\n  contactRoles: [\n    'CTO', '\"Head of Engineering\"', '\"Engineering Manager\"', 'Founder', 'CEO',\n    '\"Talent Acquisition\"', '\"HR Manager\"',\n  ],\n  // Job boards: site filter for the query + regex a single posting URL must match.\n  boards: {\n    'LinkedIn Jobs': { site: 'linkedin.com/jobs/view', match: 'linkedin\\\\.com\\\\/jobs\\\\/view\\\\/' },\n    'Rozee.pk':      { site: 'rozee.pk', match: 'rozee\\\\.pk\\\\/' },\n    'Indeed':        { site: 'indeed.com', match: 'indeed\\\\.com\\\\/' },\n    'Bayt':          { site: 'bayt.com', match: 'bayt\\\\.com\\\\/[a-z]{2}\\\\/.*job' },\n    'Greenhouse':    { site: 'greenhouse.io', match: 'greenhouse\\\\.io\\\\/[^/]+\\\\/jobs\\\\/\\\\d+' },\n    'Lever':         { site: 'jobs.lever.co', match: 'jobs\\\\.lever\\\\.co\\\\/[^/]+\\\\/[0-9a-f-]{8,}' },\n    'Any website':   { site: '', match: '^https?:\\\\/\\\\/' },\n  },\n};\n\nconst form = $('Lead Intake Form').first().json;\n\nfunction asList(value) {\n  if (Array.isArray(value)) return value.map(String);\n  const s = String(value ?? '').trim();\n  if (!s) return [];\n  try {\n    const parsed = JSON.parse(s);\n    if (Array.isArray(parsed)) return parsed.map(String);\n  } catch (e) {}\n  return s.split(',').map((x) => x.trim()).filter(Boolean);\n}\n\nconst targetLeads = Number(form['Maximum leads']);\nif (![10, 25, 50].includes(targetLeads)) {\n  throw new Error(`Invalid Maximum leads value: ${form['Maximum leads']}`);\n}\n\nconst mode = String(form.Mode || '').toLowerCase().includes('job') ? 'jobs' : 'clients';\nconst modeLabel = mode === 'jobs' ? 'Jobs' : 'Clients';\n\nlet boardNames = asList(form['Job boards']).filter((b) => CONFIG.boards[b]);\nif (!boardNames.length) boardNames = ['LinkedIn Jobs', 'Rozee.pk', 'Indeed'];\nconst boards = boardNames.map((name) => ({ name, ...CONFIG.boards[name] }));\n\nconst tbsMap = {\n  'Past 24 hours': 'qdr:d',\n  'Past week': 'qdr:w',\n  'Past month': 'qdr:m',\n  'Any time': '',\n};\nconst tbs = tbsMap[form['Posted within']] ?? 'qdr:w';\n\nconst minScore = Math.min(5, Math.max(1, Number(form['Minimum fit score (1-5)'] || 3)));\nconst rankingField = String(form['Ranking method'] || '').toLowerCase();\nconst rankingMode = rankingField.includes('no ranking') ? 'none'\n  : rankingField.includes('keyword') ? 'keyword' : 'ai';\nconst rankingLabel = { ai: 'AI (Gemini)', keyword: 'Keyword', none: 'None' }[rankingMode];\n\nconst findContacts = mode === 'clients'\n  && String(form['Find a decision-maker? (clients mode)'] || 'Yes').toLowerCase().startsWith('y');\n\nconst existingRows = $('Load Existing Leads').all()\n  .filter((i) => i.json && String(i.json['Job URL'] || '').trim());\n\nreturn [{\n  json: {\n    form,\n    mode,\n    modeLabel,\n    config: {\n      aiModel: CONFIG.aiModel,\n      aiMinIntervalMs: CONFIG.aiMinIntervalMs,\n      firecrawlDelayMs: CONFIG.firecrawlDelayMs,\n      maxConsecutiveApiErrors: CONFIG.maxConsecutiveApiErrors,\n      contactRoles: CONFIG.contactRoles,\n      boards,\n      tbs,\n      minScore: rankingMode === 'none' ? 1 : minScore,\n      findContacts,\n      rankingMode,\n      rankingLabel,\n      useAi: rankingMode === 'ai',\n    },\n    targetLeads,\n    newLeadsSaved: 0,\n    lowFitCount: 0,\n    duplicateCount: 0,\n    notJobCount: 0,\n    aiErrorCount: 0,\n    consecutiveUnsuccessfulAttempts: 0,\n    consecutiveApiErrors: 0,\n    lastApiError: '',\n    lastAiCallAt: 0,\n    maxRetries: Math.max(40, targetLeads * 3),\n    maxAttempts: targetLeads * 25,\n    attemptIndex: 0,\n    seenUrls: [],\n    seenKeys: [],\n    candidateQueue: [],\n    existingLeadCount: existingRows.length,\n    searchRunId: String($execution.id),\n    startedAt: $now.toISO(),\n    shouldContinue: true,\n    lastOutcome: null,\n    status: 'running',\n    useQueue: false,\n  },\n}];"
+      },
+      "id": "9345a7a0-d0f5-5dfd-8bee-d3b1494a7a27",
+      "name": "Init Run State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Search Query\n// Uses queued results first; otherwise builds the next job-board query.\n// Rotates boards and query patterns, then broadens when results dry up.\n\nconst state = $input.first().json;\nconst cfg = state.config;\nconst form = state.form;\nconst attempt = Number(state.attemptIndex || 0);\nconst consec = Number(state.consecutiveUnsuccessfulAttempts || 0);\nconst candidateQueue = Array.isArray(state.candidateQueue) ? state.candidateQueue : [];\n\n// 1) Drain queued results before paying for another search\nif (candidateQueue.length > 0) {\n  return [{\n    json: { ...state, useQueue: true, searchQuery: '[queue]', firecrawlBody: {}, candidateQueue },\n  }];\n}\n\n// 2) Polite pacing (longer after an API error)\nif (attempt > 0) {\n  const base = Number(cfg.firecrawlDelayMs || 700);\n  const delay = state.lastOutcome === 'api_error' ? 5000\n    : consec >= 20 ? base * 2 : consec >= 10 ? base * 1.4 : base;\n  await new Promise((resolve) => setTimeout(resolve, delay));\n}\n\nconst role = String(form['Role or skill keywords'] || '').replace(/\\s+/g, ' ').trim();\nconst location = String(form.Location || '').trim();\n\nconst roleParts = role.split(/\\s*,\\s*|\\s+OR\\s+/i).map((s) => s.trim()).filter(Boolean);\nconst locParts = location.split(/[\\/,|]/).map((s) => s.trim()).filter(Boolean);\nconst isRemote = (s) => /remote|anywhere|worldwide/i.test(s);\n\nfunction pick(arr, i) { return arr.length ? arr[i % arr.length] : ''; }\nfunction quote(s) { return s ? `\"${s}\"` : ''; }\n\nconst boards = cfg.boards;\nconst board = boards[attempt % boards.length];\nconst round = Math.floor(attempt / boards.length);\n\nconst roleTerm = pick(roleParts, round) || role;\nconst roleOr = roleParts.length > 1 ? `(${roleParts.map(quote).join(' OR ')})` : quote(roleTerm);\nconst locTerm = pick(locParts, Math.floor(round / 2)) || location;\nconst locQ = isRemote(locTerm) ? 'remote' : quote(locTerm);\nconst locPlain = isRemote(locTerm) ? 'remote' : locTerm;\n\nconst sitePart = board.site ? `site:${board.site}` : '(hiring OR careers OR \"job opening\")';\n\nconst patterns = [\n  () => `${sitePart} ${quote(roleTerm)} ${locQ}`,\n  () => `${sitePart} ${roleOr} ${locQ}`,\n  () => `${sitePart} intitle:${quote(roleTerm)} ${locPlain}`,\n  () => `${sitePart} ${quote(roleTerm)} ${locPlain} hiring`,\n  () => `${sitePart} ${roleOr} ${locPlain}`,\n];\n\nconst clean = (q) => q.replace(/\"\"/g, '').replace(/\\s+/g, ' ').trim();\nlet query = clean(patterns[round % patterns.length]());\n\n// Progressive broadening when stuck\nif (consec >= 12) query = clean(`${sitePart} ${roleOr} ${locPlain}`);\nif (consec >= 24) query = clean(`${sitePart} ${roleTerm} ${locParts[0] || ''}`);\n\nlet tbs = cfg.tbs;\nif (consec >= 25 && tbs === 'qdr:d') tbs = 'qdr:w';\nif (consec >= 35 && tbs === 'qdr:w') tbs = 'qdr:m';\n\nconst firecrawlBody = { query, limit: consec >= 15 ? 15 : 10 };\nif (tbs) firecrawlBody.tbs = tbs;\nif (locTerm && !isRemote(locTerm) && consec < 12 && attempt % 2 === 0) {\n  firecrawlBody.location = locTerm;\n}\n\nreturn [{\n  json: {\n    ...state,\n    useQueue: false,\n    searchQuery: query,\n    currentBoard: board.name,\n    firecrawlBody,\n    candidateQueue: [],\n  },\n}];"
+      },
+      "id": "15d704a2-92a5-5a28-8d03-4190fe3bd498",
+      "name": "Build Search Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bbbc5a4e-d5e1-53ec-9cb1-176d6e92f59e",
+              "leftValue": "={{ $json.useQueue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bbdb1b31-7b3e-514d-af78-31c8ae037c9c",
+      "name": "Has Queued Candidates?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v2/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.firecrawlBody) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "3fbc0a71-c384-56a4-a338-9e83380393e1",
+      "name": "Firecrawl Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        1100,
+        160
+      ],
+      "notes": "Header Auth: Authorization = Bearer fc-...",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Job Candidate\n// Turns Firecrawl search results into one job candidate (and queues the rest).\n// Skips listing/search pages, non-posting URLs and anything already seen.\n\nconst state = $('Build Search Query').item.json;\nconst cfg = state.config;\nconst form = state.form;\n\nconst boards = cfg.boards.map((b) => ({ ...b, re: new RegExp(b.match, 'i') }));\nconst excludedDomains = ['youtube.com', 'wikipedia.org', 'facebook.com', 'instagram.com', 'reddit.com'];\nconst listingTitle = [\n  /\\b\\d[\\d,]*\\+?\\s+.*\\bjobs?\\b/i,              // \"120 Flutter Developer jobs in Lahore\"\n  /\\bjobs?\\s*(in|near)\\b.*\\(with salaries\\)/i,\n  /\\b(vacancies|job openings|jobs and careers)\\b/i,\n  /^jobs?\\s+(in|for)\\b/i,\n];\n\nfunction normalizeJobUrl(raw) {\n  const s = String(raw || '').trim();\n  if (!s) return '';\n  let u;\n  try { u = new URL(s); } catch (e) { return s.toLowerCase().replace(/[?#].*$/, '').replace(/\\/+$/, ''); }\n  const host = u.hostname.toLowerCase().replace(/^www\\./, '');\n  if (/(^|\\.)linkedin\\.com$/.test(host)) {\n    const m = u.pathname.match(/\\/jobs\\/view\\/(?:[^/]*?-)?(\\d{6,})/);\n    if (m) return `https://www.linkedin.com/jobs/view/${m[1]}`;\n  }\n  if (/(^|\\.)indeed\\.com$/.test(host)) {\n    const jk = u.searchParams.get('jk') || u.searchParams.get('vjk');\n    if (jk) return `https://www.indeed.com/viewjob?jk=${jk}`;\n  }\n  const path = u.pathname.replace(/\\/+$/, '');\n  return `https://${host}${path}`.toLowerCase();\n}\n\nfunction dedupeSlug(s) {\n  return String(s || '').toLowerCase()\n    .replace(/\\b(pvt|private|ltd|limited|inc|llc|co|company|corp)\\b\\.?/g, '')\n    .replace(/[^a-z0-9]+/g, '');\n}\n\n// Seen = URLs handled this run + URLs already in the sheet for this mode\nconst seen = new Set(state.seenUrls || []);\nfor (const row of $('Load Existing Leads').all()) {\n  const j = row.json || {};\n  if (String(j.Mode || '') !== state.modeLabel) continue;\n  const u = normalizeJobUrl(j['Job URL']);\n  if (u) seen.add(u);\n}\n\nfunction boardFor(url) {\n  // Most specific board first; \"Any website\" last\n  const specific = boards.filter((b) => b.site);\n  for (const b of specific) if (b.re.test(url)) return b.name;\n  const any = boards.find((b) => !b.site);\n  return any && any.re.test(url) ? any.name : '';\n}\n\n// Heuristic title parse; Gemini refines these later\nfunction parseTitle(title, url) {\n  let t = String(title || '').replace(/\\s+/g, ' ').trim()\n    .replace(/\\s*[|\\-–—]\\s*(LinkedIn|Indeed(\\.com)?|Rozee\\.pk|Bayt\\.com|Greenhouse|Lever)\\s*$/i, '')\n    .replace(/\\s*(\\.\\.\\.|…)\\s*$/, '');\n  let company = '';\n  let role = '';\n  let loc = '';\n  let m;\n  if ((m = t.match(/^(.+?) hiring (.+?) in (.+)$/i))) { [, company, role, loc] = m; }\n  else if ((m = t.match(/^Job Application for (.+?) at (.+)$/i))) { [, role, company] = m; }\n  else if ((m = t.match(/^(.+?) jobs? in (.+?) at (.+)$/i))) { [, role, loc, company] = m; }\n  else {\n    const parts = t.split(/\\s+[|\\-–—]\\s+/).map((s) => s.trim()).filter(Boolean);\n    if (/jobs\\.lever\\.co/i.test(url)) { [company = '', role = ''] = parts; }\n    else { [role = '', company = '', loc = ''] = parts; }\n  }\n  if (!company) {\n    const gh = url.match(/greenhouse\\.io\\/([^/]+)\\/jobs/i) || url.match(/jobs\\.lever\\.co\\/([^/]+)/i);\n    if (gh) company = gh[1].replace(/[-_]+/g, ' ');\n  }\n  return { company: company.trim(), role: role.trim(), loc: loc.trim() };\n}\n\nfunction basePayload(extra = {}) {\n  return {\n    ...state,\n    hasCandidate: false,\n    outcome: 'empty',\n    normalizedUrl: '',\n    apiError: '',\n    'Date Added': $now.toISODate(),\n    'Time Added': $now.toFormat('HH:mm:ss'),\n    'Mode': state.modeLabel,\n    'Company': '',\n    'Job Title': '',\n    'Location': '',\n    'Job Board': '',\n    'Job URL': '',\n    'Snippet': '',\n    'Fit Score': '',\n    'Fit Reason': '',\n    'Angle / Tip': '',\n    'Contact Name': '',\n    'Contact Title': '',\n    'Contact LinkedIn': '',\n    'Search Keywords': form['Role or skill keywords'] ?? '',\n    'Run By': form['Your name'] ?? '',\n    'Search Run ID': state.searchRunId,\n    'Status': state.mode === 'jobs' ? 'To apply' : 'New',\n    'Dedupe Key': '',\n    candidateQueue: Array.isArray(state.candidateQueue) ? state.candidateQueue : [],\n    ...extra,\n  };\n}\n\nfunction toCandidate(r, queue) {\n  const p = parseTitle(r.title, r.url);\n  const key = p.company && p.role\n    ? `${state.mode}|${dedupeSlug(p.company)}|${dedupeSlug(p.role)}` : '';\n  return basePayload({\n    hasCandidate: true,\n    outcome: 'candidate',\n    normalizedUrl: r.normalizedUrl,\n    'Company': p.company,\n    'Job Title': p.role,\n    'Location': p.loc,\n    'Job Board': r.board,\n    'Job URL': r.normalizedUrl,\n    'Snippet': String(r.description || '').slice(0, 500),\n    'Dedupe Key': key,\n    rawTitle: r.title,\n    candidateQueue: queue,\n  });\n}\n\n// A) Use a queued result\nif (state.useQueue && state.candidateQueue && state.candidateQueue.length) {\n  const [next, ...rest] = state.candidateQueue;\n  if (next.normalizedUrl && !seen.has(next.normalizedUrl)) {\n    return [{ json: toCandidate(next, rest) }];\n  }\n  return [{ json: basePayload({ outcome: 'seen', candidateQueue: rest }) }];\n}\n\n// B) Parse the Firecrawl response\nlet response = {};\ntry { response = $('Firecrawl Search').item.json; } catch (e) { response = $input.first().json; }\n\nif (!response || response.success === false || (response.error && !response.data)) {\n  const msg = response && (response.error?.message || response.error || response.message);\n  return [{ json: basePayload({ outcome: 'api_error', apiError: String(msg || 'Firecrawl request failed') }) }];\n}\n\nlet results = [];\nif (Array.isArray(response?.data?.web)) results = response.data.web;\nelse if (Array.isArray(response?.data)) results = response.data;\nelse if (Array.isArray(response?.web)) results = response.web;\n\nif (!results.length) return [{ json: basePayload({ outcome: 'empty' }) }];\n\nconst usable = [];\nconst batch = new Set();\nlet sawSeen = false;\nfor (const r of results) {\n  const url = String(r.url ?? r.link ?? '').trim();\n  const title = String(r.title ?? '').trim();\n  const description = String(r.description ?? r.snippet ?? '').trim();\n  if (!url || !title) continue;\n  if (excludedDomains.some((d) => url.toLowerCase().includes(d))) continue;\n  if (listingTitle.some((re) => re.test(title))) continue;\n  const board = boardFor(url);\n  if (!board) continue;\n  const normalizedUrl = normalizeJobUrl(url);\n  if (!normalizedUrl) continue;\n  if (seen.has(normalizedUrl)) { sawSeen = true; continue; }\n  if (batch.has(normalizedUrl)) continue;\n  batch.add(normalizedUrl);\n  usable.push({ url, title, description, normalizedUrl, board });\n}\n\nif (!usable.length) {\n  return [{ json: basePayload({ outcome: sawSeen ? 'seen' : 'invalid' }) }];\n}\n\nreturn [{ json: toCandidate(usable[0], usable.slice(1)) }];"
+      },
+      "id": "24ef86d7-5a00-578e-a03f-5be04185507b",
+      "name": "Extract Job Candidate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "87b45979-d1e2-544b-ad6b-224e99947cd2",
+              "leftValue": "={{ $json.hasCandidate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ce14b2f7-73fc-5893-88b1-e7a0439712fe",
+      "name": "Has Candidate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e748125d-2e1b-5a7b-a479-9f61baea934d",
+              "leftValue": "={{ $json.config.useAi }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "db35c750-bec1-50f0-80a1-ba28d0c84275",
+      "name": "Use AI Ranking?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Rule-Based Score\n// Used when Ranking method is \"Keyword ranking (no AI)\" or \"No ranking (save all)\".\n// No API calls. Produces the same fields as Parse AI Result so the rest of the flow is unchanged.\n\nconst lead = $input.first().json;\nconst cfg = lead.config;\nconst form = lead.form;\nconst out = { ...lead, aiError: '' };\n\nconst STOP = new Set(('and the for with from that this are you your our will have has who into able ' +\n  'years year experience work working team teams strong good great skills skill job role looking ' +\n  'want based plus etc also using use well can all any new more other per about over' +\n  ' developer engineer senior junior lead').split(/\\s+/));\n\nconst words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9+#.]+/)\n  .map((w) => w.replace(/\\.+$/, '')).filter((w) => w.length >= 3 && !STOP.has(w));\n\n// Known-keys duplicate check (same rule as the AI path)\nconst knownKeys = new Set(lead.seenKeys || []);\nfor (const row of $('Load Existing Leads').all()) {\n  const k = row.json && row.json['Dedupe Key'];\n  if (k) knownKeys.add(String(k));\n}\nconst isDuplicate = Boolean(out['Dedupe Key']) && knownKeys.has(out['Dedupe Key']);\n\nif (cfg.rankingMode === 'none') {\n  out['Fit Score'] = '';\n  out['Fit Reason'] = 'Not ranked';\n  out.outcome = isDuplicate ? 'duplicate' : 'qualified';\n} else {\n  const title = String(lead.rawTitle || lead['Job Title'] || '').toLowerCase();\n  const text = `${title} ${String(lead.Snippet || '').toLowerCase()}`;\n\n  // 1) Role match: full phrase in title = 2, some role words in title = 1\n  const rolePhrases = String(form['Role or skill keywords'] || '').toLowerCase()\n    .split(/\\s*,\\s*|\\s+or\\s+/).map((s) => s.trim()).filter(Boolean);\n  let rolePts = 0;\n  let roleNote = 'no role match';\n  if (rolePhrases.some((p) => title.includes(p))) { rolePts = 2; roleNote = 'role matches title'; }\n  else if (rolePhrases.some((p) => words(p).some((w) => title.includes(w)))) { rolePts = 1; roleNote = 'role partly matches'; }\n\n  const locs = String(form.Location || '').toLowerCase().split(/[\\/,|]/).map((s) => s.trim()).filter(Boolean);\n  const locWords = new Set(locs.flatMap((l) => words(l)));\n\n  // 2) Skill overlap with the offer / CV summary (location words don't count as skills)\n  const offerTerms = [...new Set(words(form['What you offer / your CV summary']))].filter((t) => !locWords.has(t));\n  const hits = offerTerms.filter((t) => text.includes(t));\n  const skillPts = hits.length >= 3 ? 2 : hits.length >= 1 ? 1 : 0;\n\n  // 3) Location match\n  const locText = `${text} ${String(lead.Location || '').toLowerCase()}`;\n  const locPts = locs.some((l) => locText.includes(l)) ? 1 : 0;\n\n  const score = Math.min(5, 1 + rolePts + skillPts + locPts);\n  out['Fit Score'] = score;\n  out['Fit Reason'] = `Keyword score: ${roleNote}; ${hits.length} skill match(es)` +\n    (hits.length ? ` (${hits.slice(0, 5).join(', ')})` : '') + (locPts ? '; location matches' : '');\n\n  if (isDuplicate) out.outcome = 'duplicate';\n  else if (score < cfg.minScore) out.outcome = 'low_fit';\n  else out.outcome = 'qualified';\n}\n\nout['Angle / Tip'] = out['Angle / Tip'] || '';\nout.qualified = out.outcome === 'qualified';\nout.needContact = out.qualified && cfg.findContacts && Boolean(out['Company']);\n\nreturn [{ json: out }];"
+      },
+      "id": "f901e6f0-3761-5e94-8308-7dc69329b1ef",
+      "name": "Rule-Based Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build AI Prompt\n// Builds the Gemini request that qualifies one job posting.\n// Clients mode: \"would this company buy what I offer?\"  Jobs mode: \"does this job fit my CV?\"\n\nconst lead = $input.first().json;\nconst cfg = lead.config;\nconst form = lead.form;\nconst isClients = lead.mode === 'clients';\n\n// Rate-limit Gemini calls\nconst gap = Date.now() - Number(lead.lastAiCallAt || 0);\nconst minGap = Number(cfg.aiMinIntervalMs || 4500);\nif (gap < minGap) await new Promise((r) => setTimeout(r, minGap - gap));\n\nconst offer = String(form['What you offer / your CV summary'] || '').slice(0, 2000);\n\nconst task = isClients\n  ? `You qualify B2B sales leads. A company that posts a job opening is a potential client for the user.\nThe user offers: \"\"\"${offer}\"\"\"\nScore how likely this company would buy the user's services, based on what it is hiring for.\n5 = the hiring need matches the offer exactly; 3 = related; 1 = unrelated.`\n  : `You screen job postings for a job seeker.\nCandidate profile: \"\"\"${offer}\"\"\"\nScore how well this job fits the candidate (skills, seniority, location).\n5 = excellent fit; 3 = partial fit; 1 = poor fit.`;\n\nconst prompt = `${task}\n\nSearch result to evaluate:\nBoard: ${lead['Job Board']}\nURL: ${lead['Job URL']}\nTitle: ${lead.rawTitle || ''}\nSnippet: ${lead.Snippet}\nTarget role keywords: ${form['Role or skill keywords'] || ''}\nTarget location: ${form.Location || ''}\n\nRules:\n- Use only the information above. Do not invent facts; use \"\" when unknown.\n- is_job_posting = false if this is a list or search page, an article, or a company page rather than one specific job.\n- company, role, location: as stated in the posting.\n- fit_reason: one short sentence.\n- angle: ${isClients ? 'one sentence on how to pitch this company' : 'one sentence on how to tailor the application'}.`;\n\nconst geminiBody = {\n  contents: [{ role: 'user', parts: [{ text: prompt }] }],\n  generationConfig: {\n    temperature: 0.2,\n    responseMimeType: 'application/json',\n    responseSchema: {\n      type: 'OBJECT',\n      properties: {\n        is_job_posting: { type: 'BOOLEAN' },\n        company: { type: 'STRING' },\n        role: { type: 'STRING' },\n        location: { type: 'STRING' },\n        fit_score: { type: 'INTEGER' },\n        fit_reason: { type: 'STRING' },\n        angle: { type: 'STRING' },\n      },\n      required: ['is_job_posting', 'company', 'role', 'location', 'fit_score', 'fit_reason', 'angle'],\n    },\n  },\n};\n\nreturn [{ json: { ...lead, geminiBody, lastAiCallAt: Date.now() } }];"
+      },
+      "id": "00232e28-2ff3-540c-a2d8-877bd0a5553d",
+      "name": "Build AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.config.aiModel }}:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.geminiBody) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "d72de1ed-cc56-5a89-b980-7bac41907bbd",
+      "name": "Gemini Qualify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        2200,
+        -200
+      ],
+      "notes": "Header Auth: x-goog-api-key = your Gemini key",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI Result\n// Reads Gemini's JSON verdict, merges it into the lead, and decides what happens next.\n// Outcomes: qualified | low_fit | not_job | duplicate. If Gemini fails, the lead is kept unscored.\n\nconst lead = $('Build AI Prompt').item.json;\nconst cfg = lead.config;\nconst resp = $input.first().json || {};\n\nfunction dedupeSlug(s) {\n  return String(s || '').toLowerCase()\n    .replace(/\\b(pvt|private|ltd|limited|inc|llc|co|company|corp)\\b\\.?/g, '')\n    .replace(/[^a-z0-9]+/g, '');\n}\n\nlet ai = null;\nlet aiError = '';\ntry {\n  if (resp.error) throw new Error(resp.error.message || JSON.stringify(resp.error));\n  const text = (resp.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();\n  if (!text) throw new Error('Empty Gemini response');\n  ai = JSON.parse(text.replace(/^```(?:json)?\\s*|\\s*```$/g, ''));\n} catch (e) {\n  aiError = String(e.message || e).slice(0, 200);\n}\n\nconst out = { ...lead };\ndelete out.geminiBody;\nout.aiError = aiError;\n\nif (ai) {\n  out['Company'] = String(ai.company || '').trim() || lead['Company'];\n  out['Job Title'] = String(ai.role || '').trim() || lead['Job Title'];\n  out['Location'] = String(ai.location || '').trim() || lead['Location'];\n  const score = Math.min(5, Math.max(1, Math.round(Number(ai.fit_score) || 1)));\n  out['Fit Score'] = score;\n  out['Fit Reason'] = String(ai.fit_reason || '').trim();\n  out['Angle / Tip'] = String(ai.angle || '').trim();\n} else {\n  out['Fit Reason'] = `Not scored (AI error: ${aiError})`;\n}\n\n// Re-compute the dedupe key with the cleaner AI fields\nout['Dedupe Key'] = out['Company'] && out['Job Title']\n  ? `${lead.mode}|${dedupeSlug(out['Company'])}|${dedupeSlug(out['Job Title'])}` : '';\n\nconst knownKeys = new Set(lead.seenKeys || []);\nfor (const row of $('Load Existing Leads').all()) {\n  const k = row.json && row.json['Dedupe Key'];\n  if (k) knownKeys.add(String(k));\n}\n\nif (ai && ai.is_job_posting === false) out.outcome = 'not_job';\nelse if (out['Dedupe Key'] && knownKeys.has(out['Dedupe Key'])) out.outcome = 'duplicate';\nelse if (ai && out['Fit Score'] < cfg.minScore) out.outcome = 'low_fit';\nelse out.outcome = 'qualified';\n\nout.qualified = out.outcome === 'qualified';\nout.needContact = out.qualified && cfg.findContacts && Boolean(out['Company']);\n\nreturn [{ json: out }];"
+      },
+      "id": "ff5e5589-bd7d-5cde-aa28-eac2bb35f98a",
+      "name": "Parse AI Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c991b9c3-fee1-517a-af0e-fc9e67deee0c",
+              "leftValue": "={{ $json.qualified }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "be05d60b-0e88-589b-af1d-9103cddad037",
+      "name": "Qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "aa9cdecc-41d1-5b54-bd38-8f471be97028",
+              "leftValue": "={{ $json.needContact }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f6e855c7-ca93-531d-afe1-eeb796d30c87",
+      "name": "Find Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Contact Query\n// Clients mode only: search LinkedIn profiles for a decision-maker at the hiring company.\n\nconst lead = $input.first().json;\nconst cfg = lead.config;\n\nconst company = String(lead['Company'] || '').replace(/\"/g, '').trim();\nconst city = String(lead.form.Location || '').split(/[\\/,|]/)[0].trim();\nconst cityPart = city && !/remote|anywhere|worldwide/i.test(city) ? city : '';\nconst roles = (cfg.contactRoles || []).join(' OR ');\n\nconst query = `site:linkedin.com/in/ \"${company}\" (${roles}) ${cityPart}`.replace(/\\s+/g, ' ').trim();\n\nreturn [{ json: { ...lead, contactBody: { query, limit: 5 } } }];"
+      },
+      "id": "322e1f89-01b7-5448-979b-2ad8b0e27eb2",
+      "name": "Build Contact Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        -360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v2/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.contactBody) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "503f9e26-7681-551e-9bfd-c37f2e1a387f",
+      "name": "Firecrawl Contact Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        3520,
+        -360
+      ],
+      "notes": "Same Firecrawl credential",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Contact\n// Picks the first LinkedIn profile that clearly mentions the company. Leaves blanks if unsure.\n\nconst lead = $('Build Contact Query').item.json;\nconst resp = $input.first().json || {};\nconst out = { ...lead };\ndelete out.contactBody;\n\nconst results = Array.isArray(resp?.data?.web) ? resp.data.web\n  : Array.isArray(resp?.data) ? resp.data : [];\n\nconst generic = new Set(['pvt', 'private', 'ltd', 'limited', 'inc', 'llc', 'the', 'and', 'company',\n  'group', 'solutions', 'technologies', 'technology', 'tech', 'software', 'services', 'international']);\nconst tokens = String(lead['Company'] || '').toLowerCase().split(/[^a-z0-9]+/)\n  .filter((t) => t.length >= 3 && !generic.has(t));\n\nfunction parsePerson(title) {\n  const cleaned = String(title || '').replace(/\\s+/g, ' ').trim()\n    .replace(/\\s*[-–—|]\\s*LinkedIn\\s*$/i, '');\n  const parts = cleaned.split(/\\s+[-–—|]\\s+/).map((s) => s.trim()).filter(Boolean);\n  return { name: parts[0] || '', title: parts[1] || '' };\n}\n\nif (tokens.length) {\n  for (const r of results) {\n    const url = String(r.url || '');\n    const m = url.match(/linkedin\\.com\\/in\\/([^/?#]+)/i);\n    if (!m) continue;\n    const hay = `${r.title || ''} ${r.description || ''}`.toLowerCase();\n    if (!tokens.some((t) => hay.includes(t))) continue;\n    const p = parsePerson(r.title);\n    out['Contact Name'] = p.name;\n    out['Contact Title'] = p.title;\n    out['Contact LinkedIn'] = `https://www.linkedin.com/in/${decodeURIComponent(m[1]).toLowerCase()}`;\n    break;\n  }\n}\n\nreturn [{ json: out }];"
+      },
+      "id": "e20d2474-0dc4-5083-87da-fcb367df80f0",
+      "name": "Extract Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        -360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Row\n// Single entry point before writing to the sheet (with or without contact lookup).\n\nconst lead = $input.first().json;\nreturn [{\n  json: {\n    ...lead,\n    'Contact Name': lead['Contact Name'] || '',\n    'Contact Title': lead['Contact Title'] || '',\n    'Contact LinkedIn': lead['Contact LinkedIn'] || '',\n  },\n}];"
+      },
+      "id": "57263546-016a-5aa4-9efb-bb57536b9c47",
+      "name": "Prepare Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3960,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date Added": "={{ $json['Date Added'] }}",
+            "Time Added": "={{ $json['Time Added'] }}",
+            "Mode": "={{ $json['Mode'] }}",
+            "Company": "={{ $json['Company'] }}",
+            "Job Title": "={{ $json['Job Title'] }}",
+            "Location": "={{ $json['Location'] }}",
+            "Job Board": "={{ $json['Job Board'] }}",
+            "Job URL": "={{ $json['Job URL'] }}",
+            "Snippet": "={{ $json['Snippet'] }}",
+            "Fit Score": "={{ $json['Fit Score'] }}",
+            "Fit Reason": "={{ $json['Fit Reason'] }}",
+            "Angle / Tip": "={{ $json['Angle / Tip'] }}",
+            "Contact Name": "={{ $json['Contact Name'] }}",
+            "Contact Title": "={{ $json['Contact Title'] }}",
+            "Contact LinkedIn": "={{ $json['Contact LinkedIn'] }}",
+            "Search Keywords": "={{ $json['Search Keywords'] }}",
+            "Run By": "={{ $json['Run By'] }}",
+            "Search Run ID": "={{ $json['Search Run ID'] }}",
+            "Status": "={{ $json['Status'] }}",
+            "Dedupe Key": "={{ $json['Dedupe Key'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date Added",
+              "displayName": "Date Added",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Time Added",
+              "displayName": "Time Added",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Mode",
+              "displayName": "Mode",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Location",
+              "displayName": "Location",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Job Board",
+              "displayName": "Job Board",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Job URL",
+              "displayName": "Job URL",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Snippet",
+              "displayName": "Snippet",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Fit Score",
+              "displayName": "Fit Score",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Fit Reason",
+              "displayName": "Fit Reason",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Angle / Tip",
+              "displayName": "Angle / Tip",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Contact Name",
+              "displayName": "Contact Name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Contact Title",
+              "displayName": "Contact Title",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Contact LinkedIn",
+              "displayName": "Contact LinkedIn",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Search Keywords",
+              "displayName": "Search Keywords",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Run By",
+              "displayName": "Run By",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Search Run ID",
+              "displayName": "Search Run ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Dedupe Key",
+              "displayName": "Dedupe Key",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "90590b8d-5b1c-5c11-bf50-f59fb06e2407",
+      "name": "Append Lead to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "position": [
+        4180,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tag Created\nconst lead = $('Prepare Row').item.json;\nreturn [{ json: { ...lead, outcome: 'created' } }];"
+      },
+      "id": "acacf7e6-a5fe-5ed7-ae06-c394b8ab2fdd",
+      "name": "Tag Created",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tag Missed (no usable search result) / Tag Skipped (rejected by AI) share this logic\nconst lead = $input.first().json;\nreturn [{\n  json: {\n    ...lead,\n    outcome: lead.outcome && !['candidate', 'qualified'].includes(lead.outcome) ? lead.outcome : 'invalid',\n  },\n}];"
+      },
+      "id": "937aa572-014d-58a6-8f75-c37aee4e4042",
+      "name": "Tag Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tag Missed (no usable search result) / Tag Skipped (rejected by AI) share this logic\nconst lead = $input.first().json;\nreturn [{\n  json: {\n    ...lead,\n    outcome: lead.outcome && !['candidate', 'qualified'].includes(lead.outcome) ? lead.outcome : 'invalid',\n  },\n}];"
+      },
+      "id": "c9a87c0e-2317-55ce-88be-8c02892c6c3e",
+      "name": "Tag Missed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update Counters\n// Records the outcome of this pass and decides whether the loop continues.\n\nconst c = $input.first().json;\nconst cfg = c.config;\nconst outcome = c.outcome || 'invalid';\n\nlet newLeadsSaved = Number(c.newLeadsSaved || 0);\nlet lowFitCount = Number(c.lowFitCount || 0);\nlet duplicateCount = Number(c.duplicateCount || 0);\nlet notJobCount = Number(c.notJobCount || 0);\nlet aiErrorCount = Number(c.aiErrorCount || 0);\nlet consecutiveUnsuccessfulAttempts = Number(c.consecutiveUnsuccessfulAttempts || 0);\nlet consecutiveApiErrors = Number(c.consecutiveApiErrors || 0);\nlet lastApiError = c.lastApiError || '';\nconst attemptIndex = Number(c.attemptIndex || 0) + 1;\n\nconst seenUrls = Array.isArray(c.seenUrls) ? [...c.seenUrls] : [];\nconst seenKeys = Array.isArray(c.seenKeys) ? [...c.seenKeys] : [];\nif (c.normalizedUrl && !seenUrls.includes(c.normalizedUrl)) seenUrls.push(c.normalizedUrl);\nconst key = c['Dedupe Key'];\nif (key && ['created', 'low_fit', 'not_job', 'duplicate'].includes(outcome) && !seenKeys.includes(key)) {\n  seenKeys.push(key);\n}\n\nif (outcome === 'created') { newLeadsSaved += 1; consecutiveUnsuccessfulAttempts = 0; }\nelse consecutiveUnsuccessfulAttempts += 1;\n\nif (outcome === 'low_fit') lowFitCount += 1;\nif (outcome === 'duplicate') duplicateCount += 1;\nif (outcome === 'not_job') notJobCount += 1;\nif (c.aiError) aiErrorCount += 1;\n\nif (outcome === 'api_error') { consecutiveApiErrors += 1; lastApiError = c.apiError || lastApiError; }\nelse consecutiveApiErrors = 0;\n\nconst maxApi = Number(cfg.maxConsecutiveApiErrors || 3);\nconst shouldContinue =\n  newLeadsSaved < c.targetLeads &&\n  consecutiveUnsuccessfulAttempts < c.maxRetries &&\n  consecutiveApiErrors < maxApi &&\n  attemptIndex < c.maxAttempts;\n\nlet status = 'running';\nif (newLeadsSaved >= c.targetLeads) status = 'target_reached';\nelse if (consecutiveApiErrors >= maxApi) status = 'api_error';\nelse if (consecutiveUnsuccessfulAttempts >= c.maxRetries) status = 'retry_limit_reached';\nelse if (attemptIndex >= c.maxAttempts) status = 'max_attempts_reached';\n\nreturn [{\n  json: {\n    form: c.form,\n    mode: c.mode,\n    modeLabel: c.modeLabel,\n    config: cfg,\n    targetLeads: c.targetLeads,\n    newLeadsSaved,\n    lowFitCount,\n    duplicateCount,\n    notJobCount,\n    aiErrorCount,\n    consecutiveUnsuccessfulAttempts,\n    consecutiveApiErrors,\n    lastApiError,\n    lastAiCallAt: c.lastAiCallAt || 0,\n    maxRetries: c.maxRetries,\n    maxAttempts: c.maxAttempts,\n    attemptIndex,\n    seenUrls,\n    seenKeys,\n    candidateQueue: Array.isArray(c.candidateQueue) ? c.candidateQueue : [],\n    existingLeadCount: c.existingLeadCount,\n    searchRunId: c.searchRunId,\n    startedAt: c.startedAt,\n    shouldContinue,\n    lastOutcome: outcome,\n    status,\n    useQueue: false,\n  },\n}];"
+      },
+      "id": "48fdb0d9-fba3-5e03-b9c0-6fce3fabff67",
+      "name": "Update Counters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4620,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "acc2ea9d-3dd7-5cfe-80d8-6232b283a52d",
+              "leftValue": "={{ $json.shouldContinue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "878cc5f7-8deb-51fa-837a-dcdc7643122a",
+      "name": "Should Continue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4840,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Run Summary\n// Final stats for the execution log and the \"Run Log\" sheet tab.\n\nconst s = $input.first().json;\nconst skipped = Number(s.lowFitCount || 0) + Number(s.duplicateCount || 0) + Number(s.notJobCount || 0);\n\nreturn [{\n  json: {\n    'Run ID': s.searchRunId,\n    'Date': $now.toISODate(),\n    'Time': $now.toFormat('HH:mm:ss'),\n    'Mode': s.modeLabel,\n    'Run By': s.form['Your name'] || '',\n    'Keywords': s.form['Role or skill keywords'] || '',\n    'Location': s.form.Location || '',\n    'Ranking': s.config.rankingLabel || '',\n    'Boards': (s.config.boards || []).map((b) => b.name).join(', '),\n    'Target': s.targetLeads,\n    'Saved': s.newLeadsSaved,\n    'Skipped': skipped,\n    'Low Fit': s.lowFitCount,\n    'Duplicates': s.duplicateCount,\n    'Attempts': s.attemptIndex,\n    'AI Errors': s.aiErrorCount,\n    'Status': s.status,\n    'Last Error': s.lastApiError || '',\n  },\n}];"
+      },
+      "id": "dabaeaae-55bd-59d6-8213-127aafc442c6",
+      "name": "Run Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5060,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Run Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Run ID": "={{ $json['Run ID'] }}",
+            "Date": "={{ $json['Date'] }}",
+            "Time": "={{ $json['Time'] }}",
+            "Mode": "={{ $json['Mode'] }}",
+            "Run By": "={{ $json['Run By'] }}",
+            "Keywords": "={{ $json['Keywords'] }}",
+            "Location": "={{ $json['Location'] }}",
+            "Ranking": "={{ $json['Ranking'] }}",
+            "Boards": "={{ $json['Boards'] }}",
+            "Target": "={{ $json['Target'] }}",
+            "Saved": "={{ $json['Saved'] }}",
+            "Skipped": "={{ $json['Skipped'] }}",
+            "Low Fit": "={{ $json['Low Fit'] }}",
+            "Duplicates": "={{ $json['Duplicates'] }}",
+            "Attempts": "={{ $json['Attempts'] }}",
+            "AI Errors": "={{ $json['AI Errors'] }}",
+            "Status": "={{ $json['Status'] }}",
+            "Last Error": "={{ $json['Last Error'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Run ID",
+              "displayName": "Run ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Time",
+              "displayName": "Time",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Mode",
+              "displayName": "Mode",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Run By",
+              "displayName": "Run By",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Keywords",
+              "displayName": "Keywords",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Location",
+              "displayName": "Location",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Ranking",
+              "displayName": "Ranking",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Boards",
+              "displayName": "Boards",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Target",
+              "displayName": "Target",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Saved",
+              "displayName": "Saved",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Skipped",
+              "displayName": "Skipped",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Low Fit",
+              "displayName": "Low Fit",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Duplicates",
+              "displayName": "Duplicates",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Attempts",
+              "displayName": "Attempts",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "AI Errors",
+              "displayName": "AI Errors",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "Last Error",
+              "displayName": "Last Error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ec57ab91-40d0-54c3-ae2a-dbf3e62451b4",
+      "name": "Append Run Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "position": [
+        5280,
+        160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Lead Intake Form": {
+      "main": [
+        [
+          {
+            "node": "Load Existing Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Leads": {
+      "main": [
+        [
+          {
+            "node": "Init Run State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Run State": {
+      "main": [
+        [
+          {
+            "node": "Build Search Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Search Query": {
+      "main": [
+        [
+          {
+            "node": "Has Queued Candidates?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Queued Candidates?": {
+      "main": [
+        [
+          {
+            "node": "Extract Job Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Firecrawl Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl Search": {
+      "main": [
+        [
+          {
+            "node": "Extract Job Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Job Candidate": {
+      "main": [
+        [
+          {
+            "node": "Has Candidate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Candidate?": {
+      "main": [
+        [
+          {
+            "node": "Use AI Ranking?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Missed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use AI Ranking?": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rule-Based Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule-Based Score": {
+      "main": [
+        [
+          {
+            "node": "Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini Qualify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Qualify": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Result": {
+      "main": [
+        [
+          {
+            "node": "Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualified?": {
+      "main": [
+        [
+          {
+            "node": "Find Contact?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Contact?": {
+      "main": [
+        [
+          {
+            "node": "Build Contact Query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Contact Query": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl Contact Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl Contact Search": {
+      "main": [
+        [
+          {
+            "node": "Extract Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Contact": {
+      "main": [
+        [
+          {
+            "node": "Prepare Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Row": {
+      "main": [
+        [
+          {
+            "node": "Append Lead to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Lead to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Tag Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Created": {
+      "main": [
+        [
+          {
+            "node": "Update Counters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Skipped": {
+      "main": [
+        [
+          {
+            "node": "Update Counters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Missed": {
+      "main": [
+        [
+          {
+            "node": "Update Counters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Counters": {
+      "main": [
+        [
+          {
+            "node": "Should Continue?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Continue?": {
+      "main": [
+        [
+          {
+            "node": "Build Search Query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Summary": {
+      "main": [
+        [
+          {
+            "node": "Append Run Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Karachi"
+  },
+  "tags": []
+}

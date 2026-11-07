@@ -1,0 +1,11 @@
+{
+  "name": "hiring-signal-leadgen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "n8n workflow: job postings to AI-qualified leads in Google Sheets",
+  "scripts": {
+    "build": "python3 scripts/build_workflow.py",
+    "test": "node tests/simulate.js"
+  },
+  "license": "MIT"
+}
