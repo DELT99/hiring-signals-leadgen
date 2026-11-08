@@ -3,6 +3,6 @@ const lead = $input.first().json;
 return [{
   json: {
     ...lead,
-    outcome: lead.outcome && !['candidate', 'qualified'].includes(lead.outcome) ? lead.outcome : 'invalid',
+    outcome: lead.outcome && !['candidate', 'qualified', 'pending_ai'].includes(lead.outcome) ? lead.outcome : 'invalid',
   },
 }];

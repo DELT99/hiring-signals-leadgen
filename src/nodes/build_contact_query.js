@@ -5,7 +5,8 @@ const lead = $input.first().json;
 const cfg = lead.config;
 
 const company = String(lead['Company'] || '').replace(/"/g, '').trim();
-const city = String(lead.form.Location || '').split(/[\/,|]/)[0].trim();
+// The location this job matched, else the first non-remote location picked on the form
+const city = String(lead.matchedLocation || (cfg.locations || []).find((l) => !/remote/i.test(l)) || '').trim();
 const cityPart = city && !/remote|anywhere|worldwide/i.test(city) ? city : '';
 const roles = (cfg.contactRoles || []).join(' OR ');
 

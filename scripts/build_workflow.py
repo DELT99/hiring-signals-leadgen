@@ -17,16 +17,31 @@ NS = uuid.UUID("6f1c2a2e-5b1e-4d7a-9c39-2b8f3a1d0e11")
 def nid(name):
     return str(uuid.uuid5(NS, name))
 
+# What a person needs to act on a lead. Run details (who, when, what was searched) live in Run Log,
+# joined by Run ID.
 LEAD_COLUMNS = [
-    "Date Added", "Time Added", "Mode", "Company", "Job Title", "Location",
-    "Job Board", "Job URL", "Snippet", "Fit Score", "Fit Reason", "Angle / Tip",
-    "Contact Name", "Contact Title", "Contact LinkedIn", "Search Keywords",
-    "Run By", "Search Run ID", "Status", "Dedupe Key",
+    "Date Added", "Mode", "Company", "Job Title", "Location", "Posted", "Job Board",
+    "Job URL", "Fit Score", "Why It Fits", "Pitch / Tip", "Contact", "Contact LinkedIn",
+    "Status", "Run ID",
 ]
 RUNLOG_COLUMNS = [
-    "Run ID", "Date", "Time", "Mode", "Run By", "Keywords", "Location", "Ranking", "Boards",
-    "Target", "Saved", "Skipped", "Low Fit", "Duplicates", "Attempts", "AI Errors",
-    "Status", "Last Error",
+    "Run ID", "Date", "Time", "Run By", "Mode", "Roles", "Locations", "Boards", "Posted Within",
+    "Ranking", "AI Model", "Min Score", "Target", "Saved", "Saved By Board", "Low Fit",
+    "Duplicates", "Closed", "Wrong Location", "Not A Job", "Page Checked", "Searches",
+    "Attempts", "AI Errors", "Status", "Last Error",
+]
+
+ROLE_OPTIONS = [
+    "Flutter Developer", "Mobile App Developer", "AI Engineer", "Machine Learning Engineer",
+    "Data Scientist", "Data Engineer", "Python Developer", "Full Stack Developer",
+    "Backend Developer", "Frontend Developer", "React Developer", "Node.js Developer",
+    ".NET Developer", "Java Developer", "DevOps Engineer", "QA Engineer",
+    "UI/UX Designer", "Product Manager", "Software Engineer",
+]
+LOCATION_OPTIONS = [
+    "Lahore", "Karachi", "Islamabad", "Rawalpindi", "Faisalabad", "Peshawar", "Multan",
+    "Pakistan (anywhere)", "Remote", "Dubai", "Abu Dhabi", "UAE (anywhere)", "Riyadh",
+    "Jeddah", "Saudi Arabia (anywhere)", "Doha",
 ]
 
 DOC = {"__rl": True, "value": "PASTE_YOUR_GOOGLE_SHEET_ID", "mode": "id"}
@@ -56,7 +71,7 @@ def iff(name, expr, pos):
         "id": nid(name), "name": name, "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": pos,
     }
 
-def http(name, url, body_expr, pos, note):
+def http(name, url, body_expr, pos, note, timeout=60000):
     return {
         "parameters": {
             "method": "POST",
@@ -66,7 +81,7 @@ def http(name, url, body_expr, pos, note):
             "sendBody": True,
             "specifyBody": "json",
             "jsonBody": body_expr,
-            "options": {"response": {"response": {"neverError": True}}, "timeout": 60000},
+            "options": {"response": {"response": {"neverError": True}}, "timeout": timeout},
         },
         "id": nid(name), "name": name, "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
         "onError": "continueRegularOutput", "position": pos, "notes": note, "notesInFlow": True,
@@ -94,8 +109,8 @@ def sheet_append(name, tab_name, columns, pos):
         "retryOnFail": True, "maxTries": 3, "waitBetweenTries": 3000, "position": pos,
     }
 
-def dropdown(label, opts, multi=False):
-    f = {"fieldLabel": label, "fieldType": "dropdown", "requiredField": True,
+def dropdown(label, opts, multi=False, required=True):
+    f = {"fieldLabel": label, "fieldType": "dropdown", "requiredField": required,
          "fieldOptions": {"values": [{"option": o} for o in opts]}}
     if multi:
         f["multiselect"] = True
@@ -108,9 +123,13 @@ form = {
         "formFields": {"values": [
             dropdown("Mode", ["Find clients (companies that are hiring)", "Find jobs for me"]),
             {"fieldLabel": "Your name", "requiredField": True},
-            {"fieldLabel": "Role or skill keywords", "requiredField": True,
-             "placeholder": "e.g. Flutter developer, Mobile app developer"},
-            {"fieldLabel": "Location", "requiredField": True, "placeholder": "e.g. Lahore / Karachi / Remote"},
+            dropdown("Roles", ROLE_OPTIONS, multi=True, required=False),
+            {"fieldLabel": "Other roles (comma-separated)", "requiredField": False,
+             "placeholder": "e.g. Prompt Engineer, Shopify Developer"},
+            dropdown("Locations", LOCATION_OPTIONS, multi=True, required=False),
+            {"fieldLabel": "Other locations (comma-separated)", "requiredField": False,
+             "placeholder": "e.g. Sialkot, Muscat, Berlin"},
+            dropdown("Location filter", ["Only keep jobs in my locations (or remote)", "Keep all results"]),
             dropdown("Job boards", ["LinkedIn Jobs", "Rozee.pk", "Indeed", "Bayt", "Greenhouse", "Lever", "Any website"], multi=True),
             dropdown("Posted within", ["Past week", "Past 24 hours", "Past month", "Any time"]),
             {"fieldLabel": "What you offer / your CV summary", "fieldType": "textarea", "requiredField": True,
@@ -118,6 +137,7 @@ form = {
             dropdown("Ranking method", ["AI ranking (Gemini)", "Keyword ranking (no AI)", "No ranking (save all)"]),
             dropdown("Minimum fit score (1-5)", ["3", "4", "5", "2", "1"]),
             dropdown("Find a decision-maker? (clients mode)", ["Yes", "No"]),
+            dropdown("Check job is still open? (extra credits)", ["Yes", "No"]),
             dropdown("Maximum leads", ["10", "25", "50"]),
         ]},
         "options": {},
@@ -144,30 +164,38 @@ nodes = [
          "Header Auth: Authorization = Bearer fc-..."),
     code("Extract Job Candidate", "extract_job_candidate.js", [1320, 0]),
     iff("Has Candidate?", "={{ $json.hasCandidate }}", [1540, 0]),
-    iff("Use AI Ranking?", "={{ $json.config.useAi }}", [1760, -40]),
-    code("Rule-Based Score", "rule_based_score.js", [1980, 60]),
-    code("Build AI Prompt", "build_ai_prompt.js", [1980, -200]),
+    code("Rule-Based Score", "rule_based_score.js", [1760, -120]),
+    iff("Use AI Ranking?", "={{ $json.sendToAi }}", [1980, -120]),
+    code("Build AI Prompt", "build_ai_prompt.js", [2200, -320]),
     http("Gemini Qualify",
-         "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.config.aiModel }}:generateContent",
-         "={{ JSON.stringify($json.geminiBody) }}", [2200, -200],
-         "Header Auth: x-goog-api-key = your Gemini key"),
-    code("Parse AI Result", "parse_ai_result.js", [2420, -200]),
-    iff("Qualified?", "={{ $json.qualified }}", [2860, -120]),
-    iff("Find Contact?", "={{ $json.needContact }}", [3080, -240]),
-    code("Build Contact Query", "build_contact_query.js", [3300, -360]),
+         "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.aiModelCurrent }}:generateContent",
+         "={{ JSON.stringify($json.geminiBody) }}", [2420, -320],
+         "Header Auth: x-goog-api-key = your Gemini key", timeout=30000),
+    code("Parse AI Result", "parse_ai_result.js", [2640, -320]),
+    iff("Retry AI?", "={{ $json.aiRetry }}", [2860, -320]),
+    iff("Qualified?", "={{ $json.qualified }}", [3080, -120]),
+    iff("Check Open?", "={{ $json.needOpenCheck }}", [3300, -240]),
+    code("Build Open Check", "build_open_check.js", [3520, -420]),
+    http("Firecrawl Page Check", "https://api.firecrawl.dev/v2/scrape",
+         "={{ JSON.stringify($json.scrapeBody) }}", [3740, -420],
+         "Same Firecrawl credential", timeout=45000),
+    code("Evaluate Open", "evaluate_open.js", [3960, -420]),
+    iff("Still Open?", "={{ $json.stillOpen }}", [4180, -420]),
+    iff("Find Contact?", "={{ $json.needContact }}", [4400, -240]),
+    code("Build Contact Query", "build_contact_query.js", [4620, -400]),
     http("Firecrawl Contact Search", "https://api.firecrawl.dev/v2/search",
-         "={{ JSON.stringify($json.contactBody) }}", [3520, -360],
+         "={{ JSON.stringify($json.contactBody) }}", [4840, -400],
          "Same Firecrawl credential"),
-    code("Extract Contact", "extract_contact.js", [3740, -360]),
-    code("Prepare Row", "prepare_row.js", [3960, -240]),
-    sheet_append("Append Lead to Sheet", "Leads", LEAD_COLUMNS, [4180, -240]),
-    code("Tag Created", "tag_created.js", [4400, -240]),
-    code("Tag Skipped", "tag_missed.js", [3080, 40]),
+    code("Extract Contact", "extract_contact.js", [5060, -400]),
+    code("Prepare Row", "prepare_row.js", [5280, -240]),
+    sheet_append("Append Lead to Sheet", "Leads", LEAD_COLUMNS, [5500, -240]),
+    code("Tag Created", "tag_created.js", [5720, -240]),
+    code("Tag Skipped", "tag_missed.js", [4400, 40]),
     code("Tag Missed", "tag_missed.js", [1760, 200]),
-    code("Update Counters", "update_counters.js", [4620, 40]),
-    iff("Should Continue?", "={{ $json.shouldContinue }}", [4840, 40]),
-    code("Run Summary", "run_summary.js", [5060, 160]),
-    sheet_append("Append Run Log", "Run Log", RUNLOG_COLUMNS, [5280, 160]),
+    code("Update Counters", "update_counters.js", [5940, 40]),
+    iff("Should Continue?", "={{ $json.shouldContinue }}", [6160, 40]),
+    code("Run Summary", "run_summary.js", [6380, 160]),
+    sheet_append("Append Run Log", "Run Log", RUNLOG_COLUMNS, [6600, 160]),
 ]
 
 def link(*targets):
@@ -181,13 +209,19 @@ connections = {
     "Has Queued Candidates?": link("Extract Job Candidate", "Firecrawl Search"),
     "Firecrawl Search": link("Extract Job Candidate"),
     "Extract Job Candidate": link("Has Candidate?"),
-    "Has Candidate?": link("Use AI Ranking?", "Tag Missed"),
-    "Use AI Ranking?": link("Build AI Prompt", "Rule-Based Score"),
-    "Rule-Based Score": link("Qualified?"),
+    "Has Candidate?": link("Rule-Based Score", "Tag Missed"),
+    "Rule-Based Score": link("Use AI Ranking?"),
+    "Use AI Ranking?": link("Build AI Prompt", "Qualified?"),
     "Build AI Prompt": link("Gemini Qualify"),
     "Gemini Qualify": link("Parse AI Result"),
-    "Parse AI Result": link("Qualified?"),
-    "Qualified?": link("Find Contact?", "Tag Skipped"),
+    "Parse AI Result": link("Retry AI?"),
+    "Retry AI?": link("Build AI Prompt", "Qualified?"),
+    "Qualified?": link("Check Open?", "Tag Skipped"),
+    "Check Open?": link("Build Open Check", "Find Contact?"),
+    "Build Open Check": link("Firecrawl Page Check"),
+    "Firecrawl Page Check": link("Evaluate Open"),
+    "Evaluate Open": link("Still Open?"),
+    "Still Open?": link("Find Contact?", "Tag Skipped"),
     "Find Contact?": link("Build Contact Query", "Prepare Row"),
     "Build Contact Query": link("Firecrawl Contact Search"),
     "Firecrawl Contact Search": link("Extract Contact"),

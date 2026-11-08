@@ -1,12 +1,13 @@
 // Extract Job Candidate
 // Turns Firecrawl search results into one job candidate (and queues the rest).
-// Skips listing/search pages, non-posting URLs and anything already seen.
+// Skips listing/search pages, non-posting URLs, closed or stale postings and anything already seen.
 
 const state = $('Build Search Query').item.json;
 const cfg = state.config;
 const form = state.form;
 
-const boards = cfg.boards.map((b) => ({ ...b, re: new RegExp(b.match, 'i') }));
+const boards = cfg.boards.map((b) => ({ ...b, re: new RegExp(b.match, 'i'), rejectRe: b.reject ? new RegExp(b.reject, 'i') : null }));
+const MAX_QUEUE = 60;
 const excludedDomains = ['youtube.com', 'wikipedia.org', 'facebook.com', 'instagram.com', 'reddit.com'];
 const listingTitle = [
   /\b\d[\d,]*\+?\s+.*\bjobs?\b/i,              // "120 Flutter Developer jobs in Lahore"
@@ -14,6 +15,29 @@ const listingTitle = [
   /\b(vacancies|job openings|jobs and careers)\b/i,
   /^jobs?\s+(in|for)\b/i,
 ];
+
+const closedRe = new RegExp((cfg.closedPhrases || []).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '$^', 'i');
+
+// "3 days ago", "30+ days ago", "2 weeks ago", "yesterday", "Posted on Oct 12, 2026" -> age in days
+function parseAge(text) {
+  const t = String(text || '');
+  let m = t.match(/(\d+)\+?\s*(minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago/i);
+  if (m) {
+    const n = Number(m[1]);
+    const unit = m[2].toLowerCase();
+    const days = /^(minute|min|hour|hr)/.test(unit) ? 0 : /^(day)/.test(unit) ? n
+      : /^(week|wk)/.test(unit) ? n * 7 : /^(month|mo)/.test(unit) ? n * 30 : n * 365;
+    return { days, text: m[0] };
+  }
+  if ((m = t.match(/\b(just now|today|just posted|new)\b/i))) return { days: 0, text: m[0] };
+  if ((m = t.match(/\byesterday\b/i))) return { days: 1, text: m[0] };
+  m = t.match(/\b(?:posted|published|date posted)[:\s]*(?:on\s+)?([A-Z][a-z]{2,8}\.? \d{1,2},? \d{4}|\d{4}-\d{2}-\d{2})/i);
+  if (m) {
+    const d = Date.parse(m[1].replace('.', ''));
+    if (!Number.isNaN(d)) return { days: Math.max(0, Math.floor((Date.now() - d) / 86400000)), text: m[1] };
+  }
+  return null;
+}
 
 function normalizeJobUrl(raw) {
   const s = String(raw || '').trim();
@@ -51,7 +75,9 @@ for (const row of $('Load Existing Leads').all()) {
 function boardFor(url) {
   // Most specific board first; "Any website" last
   const specific = boards.filter((b) => b.site);
-  for (const b of specific) if (b.re.test(url)) return b.name;
+  for (const b of specific) {
+    if (b.re.test(url)) return b.rejectRe && b.rejectRe.test(url) ? '' : b.name;   // reject = listing/search pages
+  }
   const any = boards.find((b) => !b.site);
   return any && any.re.test(url) ? any.name : '';
 }
@@ -102,11 +128,15 @@ function basePayload(extra = {}) {
     'Contact Name': '',
     'Contact Title': '',
     'Contact LinkedIn': '',
-    'Search Keywords': form['Role or skill keywords'] ?? '',
+    'Search Keywords': cfg.rolesText || '',
     'Run By': form['Your name'] ?? '',
     'Search Run ID': state.searchRunId,
     'Status': state.mode === 'jobs' ? 'To apply' : 'New',
     'Dedupe Key': '',
+    'Posted': '',
+    'Open Check': 'Not checked',
+    closedFiltered: 0,
+    ageDays: null,
     candidateQueue: Array.isArray(state.candidateQueue) ? state.candidateQueue : [],
     ...extra,
   };
@@ -127,6 +157,8 @@ function toCandidate(r, queue) {
     'Job URL': r.normalizedUrl,
     'Snippet': String(r.description || '').slice(0, 500),
     'Dedupe Key': key,
+    'Posted': r.postedText || '',
+    ageDays: r.ageDays ?? null,
     rawTitle: r.title,
     candidateQueue: queue,
   });
@@ -134,7 +166,9 @@ function toCandidate(r, queue) {
 
 // A) Use a queued result
 if (state.useQueue && state.candidateQueue && state.candidateQueue.length) {
-  const [next, ...rest] = state.candidateQueue;
+  const i = Math.min(Number(state.queuePickIndex || 0), state.candidateQueue.length - 1);
+  const next = state.candidateQueue[i];
+  const rest = state.candidateQueue.filter((_, j) => j !== i);
   if (next.normalizedUrl && !seen.has(next.normalizedUrl)) {
     return [{ json: toCandidate(next, rest) }];
   }
@@ -159,7 +193,12 @@ if (!results.length) return [{ json: basePayload({ outcome: 'empty' }) }];
 
 const usable = [];
 const batch = new Set();
+const existingQueue = Array.isArray(state.candidateQueue) ? state.candidateQueue : [];
+const queuedUrls = new Set(existingQueue.map((q) => q.normalizedUrl));
 let sawSeen = false;
+let sawClosed = false;
+let closedN = 0;
+const maxAge = Number(cfg.maxAgeDays || 0);
 for (const r of results) {
   const url = String(r.url ?? r.link ?? '').trim();
   const title = String(r.title ?? '').trim();
@@ -172,13 +211,20 @@ for (const r of results) {
   const normalizedUrl = normalizeJobUrl(url);
   if (!normalizedUrl) continue;
   if (seen.has(normalizedUrl)) { sawSeen = true; continue; }
-  if (batch.has(normalizedUrl)) continue;
+  if (batch.has(normalizedUrl) || queuedUrls.has(normalizedUrl)) continue;
+  // Closed postings ("No longer accepting applications", "expired", ...)
+  if (closedRe.test(`${title} ${description}`)) { sawClosed = true; closedN++; continue; }
+  // Stale postings: snippet says it's older than the "Posted within" window
+  const age = parseAge(description) || parseAge(title);
+  if (age && maxAge && age.days > maxAge) { sawClosed = true; closedN++; continue; }
   batch.add(normalizedUrl);
-  usable.push({ url, title, description, normalizedUrl, board });
+  usable.push({ url, title, description, normalizedUrl, board, postedText: age ? age.text : '', ageDays: age ? age.days : null });
 }
 
 if (!usable.length) {
-  return [{ json: basePayload({ outcome: sawSeen ? 'seen' : 'invalid' }) }];
+  return [{ json: basePayload({ outcome: sawClosed ? 'closed' : sawSeen ? 'seen' : 'invalid', closedFiltered: closedN }) }];
 }
 
-return [{ json: toCandidate(usable[0], usable.slice(1)) }];
+// New results join the queue (results from other boards stay in it); oldest dropped past MAX_QUEUE
+const queue = [...existingQueue, ...usable.slice(1)].slice(-MAX_QUEUE);
+return [{ json: { ...toCandidate(usable[0], queue), closedFiltered: closedN } }];
