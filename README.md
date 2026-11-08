@@ -41,6 +41,18 @@ Then follow [Setup](#setup), a full beginner walkthrough, to connect your creden
 - **Fails safely**: stops after 3 Firecrawl errors in a row (bad key, out of credits). If Gemini is down, leads are still saved and marked "Not scored". Retries on Sheets writes.
 - **Run log**: every run writes a summary row (saved, skipped, attempts, errors, status) to a `Run Log` tab.
 
+
+## AI ranking (Gemini): Gemini reads the job title and snippet and compares them with what you typed in “What you offer / your CV summary”.
+
+Score	Find clients mode	Find jobs mode
+5	The company is hiring for exactly what you sell (e.g. you’re a Flutter agency and they’re hiring a Flutter dev)	An excellent match for your skills, seniority and location
+4	A strong match with a small gap	Good fit, worth applying
+3	Related; they could plausibly use your services	Partial fit, some skills match
+2	Weak link	Mostly a mismatch
+1	Unrelated	Poor fit
+
+
+
 ## How it works
 
 ```mermaid
