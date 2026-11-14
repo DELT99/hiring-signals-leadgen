@@ -58,7 +58,8 @@ const bIdx = searches[board.name] || 0;
 
 const roles = cfg.roles && cfg.roles.length ? cfg.roles : ['developer'];
 const locations = cfg.locations && cfg.locations.length ? cfg.locations : [''];
-const isRemote = (s) => /remote|anywhere|worldwide|work from home/i.test(s);
+const isRemote = (s) => /remote|work from home/i.test(s);
+const isAnywhere = (s) => !s || (cfg.anywhereAliases || ['anywhere']).includes(String(s).toLowerCase());
 function quote(s) { return s ? `"${s}"` : ''; }
 
 // This board's next role x location combination, then the next query pattern
@@ -69,8 +70,8 @@ const [roleTerm, locTerm] = combos[bIdx % C];
 const round = Math.floor(bIdx / C);
 
 const roleOr = roles.length > 1 ? `(${roles.map(quote).join(' OR ')})` : quote(roleTerm);
-const locQ = isRemote(locTerm) ? 'remote' : quote(locTerm);
-const locPlain = isRemote(locTerm) ? 'remote' : locTerm;
+const locQ = isAnywhere(locTerm) ? '' : isRemote(locTerm) ? 'remote' : quote(locTerm);
+const locPlain = isAnywhere(locTerm) ? '' : isRemote(locTerm) ? 'remote' : locTerm;
 
 const sitePart = board.site ? `site:${board.site}` : '(hiring OR careers OR "job opening")';
 
@@ -98,7 +99,7 @@ if (consec >= 35 && tbs === 'qdr:w') tbs = 'qdr:m';
 
 const firecrawlBody = { query, limit: consec >= 15 ? 15 : 10 };
 if (tbs) firecrawlBody.tbs = tbs;
-if (locTerm && !isRemote(locTerm) && consec < 12 && bIdx % 2 === 0) {
+if (locTerm && !isRemote(locTerm) && !isAnywhere(locTerm) && consec < 12 && bIdx % 2 === 0) {
   firecrawlBody.location = locTerm;
 }
 

@@ -9,7 +9,16 @@ A job post means a company has a need right now. One engine, two modes:
 | **Find clients** | Dev agencies, freelancers, recruiters, outsourcing firms | "This company might buy my services" | Finds a decision-maker (CTO, founder, HR) on LinkedIn |
 | **Find jobs for me** | Job seekers | "This job might fit me" | Scores the job against your CV and gives a tailoring tip |
 
-## Just want to use it?
+## Two ways to use it
+
+| | **Claude skill: Jword** | **n8n workflow** |
+|---|---|---|
+| Best for | Anyone with Claude: find jobs, get company emails, apply in the browser, email via Gmail | Hands-off lead lists on a schedule |
+| API keys | **None** | Firecrawl + Gemini + Google OAuth |
+| Output | Excel file | Google Sheet |
+| Get started | [skill/README.md](skill/README.md): upload [`dist/jword.zip`](dist/jword.zip) to Claude | Keep reading ↓ |
+
+## Just want to use it? (n8n workflow)
 
 **You only need two things from this repo:**
 
@@ -29,8 +38,8 @@ Then follow [Setup](#setup), a full beginner walkthrough, to connect your creden
 ## Features
 
 - **Searches several boards**: LinkedIn Jobs, Rozee.pk, Indeed, Bayt, Greenhouse, Lever, or any website. It does this through Firecrawl's search API. It doesn't log in anywhere or scrape LinkedIn itself.
-- **Multiple roles and locations**: pick several roles (e.g. *Flutter Developer* + *AI Engineer*) and several locations (e.g. *Lahore* + *Karachi* + *Remote*) from multi-select dropdowns, or type your own. Every **role × location** combination is searched on every board in turn, so no combination is skipped.
-- **Location filter**: *Only keep jobs in my locations (or remote)* drops results that are clearly somewhere else, e.g. a Karachi job when you picked only Lahore. Picking a country, such as *Pakistan (anywhere)* or *UAE (anywhere)*, accepts all of its cities. Jobs with no location in the text are kept.
+- **Multiple roles and locations, anywhere in the world**: pick several roles (e.g. *Flutter Developer* + *AI Engineer*), and type any cities or countries (e.g. `Berlin, London, Toronto, Remote`) or quick-pick common ones. Every **role × location** combination is searched on every board in turn, so no combination is skipped.
+- **Location filter**: *Only keep jobs in my locations (or remote)* drops results that are clearly somewhere else, e.g. a Munich job when you typed only Berlin. Typing a country, such as `Germany` or `Canada`, accepts its major cities. Jobs whose location isn't mentioned or isn't recognised are kept. *Anywhere (no location filter)* searches without any location.
 - **Smart query rotation**: rotates boards, role × location combinations and query patterns, broadens step by step when results dry up (always keeping the location), and filters by date (past 24h, week or month).
 - **Balanced across job boards**: each selected board gets a fair share of the target. With 3 boards and 10 leads that's about 4 / 3 / 3, instead of everything coming from LinkedIn. The board with the fewest saved leads is always served next. If a board stops producing usable jobs (6 failed results in a row), the others fill its share. The Run Log's **Saved By Board** column shows the split.
 - **One search feeds several leads**: extra results are queued per board, so a single paid search can produce several leads.
@@ -347,7 +356,7 @@ Node: **Lead Intake Form**. Here you can change the form title, description, or 
 1. Click **Execute workflow** (bottom-centre of the canvas; older n8n versions call it **Test workflow**). A test form opens in a new browser tab.
 2. Fill it in, starting simple:
    - **Ranking method:** *Keyword ranking (no AI)*, so your first run doesn't depend on Gemini
-   - **Roles / Locations:** one or two of each to begin with, e.g. *Flutter Developer* + *Lahore*
+   - **Roles / Locations:** one or two of each to begin with, e.g. *Flutter Developer* + `London` (or your own city)
    - **Maximum leads:** `10`
    - **Posted within:** *Past month*, which gives more results on a first test
 3. Submit, then switch back to the n8n tab. Nodes light up green as they run, and the loop repeats until 10 leads are saved.
@@ -369,7 +378,7 @@ Node: **Lead Intake Form**. Here you can change the form title, description, or 
 | *Why It Fits* says *Keyword score (AI unavailable: …high demand…)* or *timeout* | Gemini was overloaded and the retries ran out, so the keyword score was used instead. Usually temporary. If it keeps happening, put `gemini-3.5-flash-lite` (or another free-tier model listed in AI Studio) first in `aiModels`. |
 | *Why It Fits* says *AI paused for this run* | 3 postings in a row failed with AI, so the rest of the run used keyword scores. Check *Last Error* in the Run Log. |
 | Gemini error `model not found` | The workflow tries the next model automatically. To change the list, edit `aiModels` in the CONFIG block at the top of **Init Run State**. |
-| Leads are in cities you didn't pick | Set *Location filter* to *Only keep jobs in my locations*. If a city slips through, add it to `otherKnownLocations` in **Init Run State**. |
+| Leads are in cities you didn't pick | Set *Location filter* to *Only keep jobs in my locations*. If a city slips through, the filter didn't recognise it: add it to its country's `cities` in `locationGroups` (top of **Init Run State**). |
 | Error *Pick at least one role / location* | Choose something in the *Roles* / *Locations* dropdown or type it in the *Other …* box. |
 | Leads link to jobs that are closed | Turn on *Check job is still open?*, set *Posted within* to *Past week* or *Past 24 hours*, and prefer Rozee/Greenhouse/Lever (page-checked) over LinkedIn (snippet only). The Run Log's **Page Checked** and **Closed** columns show how many were verified and filtered. |
 | Most leads still come from one board | Another board stopped producing usable jobs and the rest filled its share. Check **Saved By Board** in the Run Log; try broader roles/locations or *Posted within: Past month* for that board. |
@@ -385,8 +394,8 @@ Node: **Lead Intake Form**. Here you can change the form title, description, or 
 | Your name | Saved as *Run By* |
 | Roles | Multi-select: pick one or more common roles |
 | Other roles (comma-separated) | Optional: roles not in the list, e.g. `Prompt Engineer, Shopify Developer`. You need at least one role in total, from either field. |
-| Locations | Multi-select: cities, *Pakistan / UAE / Saudi Arabia (anywhere)*, or *Remote* |
-| Other locations (comma-separated) | Optional: e.g. `Sialkot, Muscat, Berlin`. You need at least one location in total. |
+| Locations (cities or countries, comma-separated) | Type any places worldwide, e.g. `Berlin, London, Toronto` or `Germany, Remote` |
+| Quick-pick locations | Optional multi-select: *Remote*, *Anywhere (no location filter)*, and common countries (US, UK, Canada, Germany, Netherlands, Ireland, UAE, Saudi Arabia, Singapore, Australia, India, Pakistan). It's combined with what you typed; you need at least one location in total. |
 | Location filter | *Only keep jobs in my locations (or remote)* (recommended) or *Keep all results* |
 | Job boards | Choose one or more; the workflow rotates between them |
 | Posted within | Becomes the search date filter |
@@ -406,7 +415,7 @@ All settings are in the `CONFIG` object at the top of the **Init Run State** nod
 - `aiMaxAttemptsPerLead` (4), `aiDisableAfterFailures` (3), `aiPrefilterMinScore` (2): retry and fallback behaviour
 - `aiMinIntervalMs` and `firecrawlDelayMs`: pacing between API calls, to stay within rate limits. `aiMinIntervalMs` only applies in AI ranking mode.
 - `queryExclusions`, `closedPhrases`, `maxAgeDays`, `verifySkipDomains`: closed and stale job filtering
-- `locationGroups`, `remoteAliases`, `otherKnownLocations`: how the location filter recognises places. Add a city to a country's `cities` list so that picking the country also covers it, or add it to `otherKnownLocations` so it's recognised as "somewhere else".
+- `locationGroups`, `remoteAliases`, `anywhereAliases`, `otherKnownLocations`: how the location filter recognises places. About 28 countries with their major cities are built in. Add a city to a country's `cities` list so that typing the country also covers it, or add a new country group. Places not listed still work: they're matched by name.
 - To change the role or location options on the form, edit `ROLE_OPTIONS` / `LOCATION_OPTIONS` in `scripts/build_workflow.py` and rebuild, or edit the **Lead Intake Form** node directly in n8n.
 - `contactRoles`: the job titles searched for in decision-maker lookup
 - `boards`: add or edit job boards (a `site:` filter plus a regex that a single-posting URL must match)
@@ -428,7 +437,7 @@ python3 scripts/build_workflow.py   # rebuild workflow/hiring-signal-lead-engine
 node tests/simulate.js              # offline end-to-end test with mocked APIs
 ```
 
-The simulator runs the real node code through the workflow graph, with mocked Firecrawl, Gemini and Sheets. It checks 22 scenarios, including clients and jobs modes, the lean Leads columns, leads balanced across boards (and a dry board being covered by the others), every role × location combination being searched, the strict and keep-all location filters, country-level locations, old form fields still working, Firecrawl out of credits, Gemini flaky (503/timeouts → retry and model fallback), Gemini fully down (keyword fallback, then AI paused), invalid key, a model that rejects `thinkingConfig`, 429 with `retryDelay`, closed and stale postings, page check on and off, keyword ranking, no ranking, and empty results.
+The simulator runs the real node code through the workflow graph, with mocked Firecrawl, Gemini and Sheets. It checks 26 scenarios, including worldwide typed locations (cities vs. countries, *Anywhere*, typed + quick-pick combined), clients and jobs modes, the lean Leads columns, leads balanced across boards (and a dry board being covered by the others), every role × location combination being searched, the strict and keep-all location filters, country-level locations, old form fields still working, Firecrawl out of credits, Gemini flaky (503/timeouts → retry and model fallback), Gemini fully down (keyword fallback, then AI paused), invalid key, a model that rejects `thinkingConfig`, 429 with `retryDelay`, closed and stale postings, page check on and off, keyword ranking, no ranking, and empty results.
 
 If you edit a node directly in n8n, copy the code back into `src/nodes/` before rebuilding.
 

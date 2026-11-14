@@ -38,10 +38,11 @@ ROLE_OPTIONS = [
     ".NET Developer", "Java Developer", "DevOps Engineer", "QA Engineer",
     "UI/UX Designer", "Product Manager", "Software Engineer",
 ]
+# Optional quick picks (countries / remote). Anyone can type any city or country in the text field.
 LOCATION_OPTIONS = [
-    "Lahore", "Karachi", "Islamabad", "Rawalpindi", "Faisalabad", "Peshawar", "Multan",
-    "Pakistan (anywhere)", "Remote", "Dubai", "Abu Dhabi", "UAE (anywhere)", "Riyadh",
-    "Jeddah", "Saudi Arabia (anywhere)", "Doha",
+    "Remote", "Anywhere (no location filter)", "United States", "United Kingdom", "Canada",
+    "Germany", "Netherlands", "Ireland", "UAE", "Saudi Arabia", "Singapore", "Australia",
+    "India", "Pakistan",
 ]
 
 DOC = {"__rl": True, "value": "PASTE_YOUR_GOOGLE_SHEET_ID", "mode": "id"}
@@ -126,9 +127,9 @@ form = {
             dropdown("Roles", ROLE_OPTIONS, multi=True, required=False),
             {"fieldLabel": "Other roles (comma-separated)", "requiredField": False,
              "placeholder": "e.g. Prompt Engineer, Shopify Developer"},
-            dropdown("Locations", LOCATION_OPTIONS, multi=True, required=False),
-            {"fieldLabel": "Other locations (comma-separated)", "requiredField": False,
-             "placeholder": "e.g. Sialkot, Muscat, Berlin"},
+            {"fieldLabel": "Locations (cities or countries, comma-separated)", "requiredField": False,
+             "placeholder": "e.g. Berlin, London, Toronto, Remote"},
+            dropdown("Quick-pick locations", LOCATION_OPTIONS, multi=True, required=False),
             dropdown("Location filter", ["Only keep jobs in my locations (or remote)", "Keep all results"]),
             dropdown("Job boards", ["LinkedIn Jobs", "Rozee.pk", "Indeed", "Bayt", "Greenhouse", "Lever", "Any website"], multi=True),
             dropdown("Posted within", ["Past week", "Past 24 hours", "Past month", "Any time"]),

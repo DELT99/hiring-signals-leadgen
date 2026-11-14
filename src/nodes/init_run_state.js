@@ -29,23 +29,42 @@ const CONFIG = {
   verifySkipDomains: ['linkedin.com'],   // page check is never run on these (snippet signals only)
 
   // --- Location matching (for the "Only keep jobs in my locations" filter) ---
-  // Picking a country also accepts its cities; picking a city rejects jobs clearly in other cities.
+  // Typing a country also accepts its cities listed here; typing a city rejects jobs that are
+  // clearly in another known place. Places not listed still work: they match by name, and jobs
+  // whose location can't be recognised are kept. Add your own countries/cities freely.
   locationGroups: {
-    pakistan: { aliases: ['pakistan'], cities: ['lahore', 'karachi', 'islamabad', 'rawalpindi', 'faisalabad', 'peshawar', 'multan', 'quetta', 'sialkot', 'gujranwala'] },
-    uae: { aliases: ['uae', 'united arab emirates', 'emirates'], cities: ['dubai', 'abu dhabi', 'sharjah', 'ajman'] },
-    'saudi arabia': { aliases: ['saudi arabia', 'saudi', 'ksa'], cities: ['riyadh', 'jeddah', 'dammam', 'khobar'] },
+    'united states': { aliases: ['united states', 'usa', 'u.s.'], cities: ['new york', 'san francisco', 'seattle', 'austin', 'boston', 'chicago', 'los angeles', 'denver', 'atlanta', 'miami', 'dallas', 'washington dc'] },
+    'united kingdom': { aliases: ['united kingdom', 'uk', 'england', 'scotland', 'great britain'], cities: ['london', 'manchester', 'edinburgh', 'birmingham', 'bristol', 'cambridge', 'oxford'] },
+    canada: { aliases: ['canada'], cities: ['toronto', 'vancouver', 'montreal', 'ottawa', 'calgary'] },
+    germany: { aliases: ['germany', 'deutschland'], cities: ['berlin', 'munich', 'hamburg', 'frankfurt', 'cologne'] },
+    netherlands: { aliases: ['netherlands', 'holland'], cities: ['amsterdam', 'rotterdam', 'the hague', 'utrecht', 'eindhoven'] },
+    ireland: { aliases: ['ireland'], cities: ['dublin', 'cork'] },
+    france: { aliases: ['france'], cities: ['paris', 'lyon'] },
+    spain: { aliases: ['spain'], cities: ['madrid', 'barcelona'] },
+    sweden: { aliases: ['sweden'], cities: ['stockholm'] },
+    poland: { aliases: ['poland'], cities: ['warsaw', 'krakow'] },
+    uae: { aliases: ['uae', 'united arab emirates', 'emirates'], cities: ['dubai', 'abu dhabi', 'sharjah'] },
+    'saudi arabia': { aliases: ['saudi arabia', 'saudi', 'ksa'], cities: ['riyadh', 'jeddah', 'dammam'] },
     qatar: { aliases: ['qatar'], cities: ['doha'] },
-    bahrain: { aliases: ['bahrain'], cities: ['manama'] },
-    oman: { aliases: ['oman'], cities: ['muscat'] },
-    kuwait: { aliases: ['kuwait'], cities: [] },
+    singapore: { aliases: ['singapore'], cities: [] },
+    australia: { aliases: ['australia'], cities: ['sydney', 'melbourne', 'brisbane', 'perth'] },
+    india: { aliases: ['india'], cities: ['bangalore', 'bengaluru', 'mumbai', 'delhi', 'new delhi', 'pune', 'chennai', 'noida', 'gurgaon', 'gurugram'] },
+    pakistan: { aliases: ['pakistan'], cities: ['lahore', 'karachi', 'islamabad', 'rawalpindi', 'faisalabad', 'peshawar', 'multan'] },
+    egypt: { aliases: ['egypt'], cities: ['cairo'] },
+    nigeria: { aliases: ['nigeria'], cities: ['lagos', 'abuja'] },
+    kenya: { aliases: ['kenya'], cities: ['nairobi'] },
+    'south africa': { aliases: ['south africa'], cities: ['cape town', 'johannesburg'] },
+    brazil: { aliases: ['brazil', 'brasil'], cities: ['sao paulo', 'são paulo', 'rio de janeiro'] },
+    mexico: { aliases: ['mexico'], cities: ['mexico city', 'guadalajara'] },
+    japan: { aliases: ['japan'], cities: ['tokyo', 'osaka'] },
+    malaysia: { aliases: ['malaysia'], cities: ['kuala lumpur'] },
+    philippines: { aliases: ['philippines'], cities: ['manila'] },
+    turkey: { aliases: ['turkey', 'türkiye', 'turkiye'], cities: ['istanbul', 'ankara'] },
   },
-  remoteAliases: ['remote', 'work from home', 'wfh', 'anywhere', 'worldwide', 'fully remote'],
-  otherKnownLocations: [
-    'india', 'bangalore', 'bengaluru', 'delhi', 'mumbai', 'pune', 'chennai', 'noida', 'gurgaon',
-    'london', 'united kingdom', 'uk', 'usa', 'united states', 'new york', 'san francisco', 'canada',
-    'toronto', 'germany', 'berlin', 'netherlands', 'amsterdam', 'singapore', 'australia', 'sydney',
-    'egypt', 'cairo', 'bangladesh', 'dhaka', 'turkey', 'istanbul', 'malaysia', 'philippines',
-  ],
+  remoteAliases: ['remote', 'work from home', 'wfh', 'fully remote', 'remote-first'],
+  // "Anywhere" on the form = no location at all in searches, and nothing is filtered out
+  anywhereAliases: ['anywhere', 'worldwide', 'any location', 'global'],
+  otherKnownLocations: ['europe', 'emea', 'apac', 'latam', 'middle east'],
 
   // --- Decision-maker lookup ---
   contactRoles: [
@@ -92,12 +111,14 @@ const roles = uniqCI([
   ...splitList(form['Role or skill keywords']),
 ].map((x) => String(x).trim()).filter(Boolean));
 const locations = uniqCI([
-  ...asList(form['Locations']).map((x) => x.replace(/\s*\(anywhere\)\s*$/i, '')),
+  ...splitList(form['Locations (cities or countries, comma-separated)'], true),   // typed, any place worldwide
+  ...asList(form['Quick-pick locations']),
+  ...asList(form['Locations']),                                     // older form versions
   ...splitList(form['Other locations (comma-separated)'], true),
   ...splitList(form['Location'], true),
-].map((x) => String(x).trim()).filter(Boolean));
+].map((x) => String(x).replace(/\s*\((anywhere|no location filter)\)\s*$/i, '').trim()).filter(Boolean));
 if (!roles.length) throw new Error('Pick at least one role (or type one in "Other roles").');
-if (!locations.length) throw new Error('Pick at least one location (or type one in "Other locations").');
+if (!locations.length) throw new Error('Type at least one location (a city, a country, "Remote" or "Anywhere").');
 const strictLocation = !String(form['Location filter'] || 'Only').toLowerCase().startsWith('keep all');
 
 const targetLeads = Number(form['Maximum leads']);
@@ -153,6 +174,7 @@ return [{
       strictLocation,
       locationGroups: CONFIG.locationGroups,
       remoteAliases: CONFIG.remoteAliases,
+      anywhereAliases: CONFIG.anywhereAliases,
       otherKnownLocations: CONFIG.otherKnownLocations,
       boards,
       tbs,

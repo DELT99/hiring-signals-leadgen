@@ -48,6 +48,7 @@ function groupOf(name) {
   }
   return null;
 }
+const anywhere = (cfg.locations || []).some((l) => (cfg.anywhereAliases || []).includes(l.toLowerCase()));
 function termsFor(loc) {
   const k = loc.toLowerCase();
   if ((cfg.remoteAliases || []).includes(k) || /remote/.test(k)) return cfg.remoteAliases || ['remote'];
@@ -66,6 +67,7 @@ const knownOther = [
 ].filter((a) => !selectedTerms.has(a) && !parentCountries.has(a));
 // -> { status: 'match' | 'other' | 'unknown', loc }
 function matchLocation(text) {
+  if (anywhere) return { status: 'match', loc: 'Anywhere' };
   const t = String(text || '').toLowerCase();
   if (!t.trim()) return { status: 'unknown' };
   for (const s of selected) if (s.terms.some((w) => hasTerm(t, w))) return { status: 'match', loc: s.label };

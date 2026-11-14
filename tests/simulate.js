@@ -154,8 +154,8 @@ const baseForm = {
   'Your name': 'Talha',
   Roles: ['Flutter Developer', 'Mobile App Developer'],
   'Other roles (comma-separated)': '',
-  Locations: ['Lahore', 'Remote'],
-  'Other locations (comma-separated)': '',
+  'Locations (cities or countries, comma-separated)': 'Lahore, Remote',
+  'Quick-pick locations': [],
   'Location filter': 'Only keep jobs in my locations (or remote)',
   'Job boards': ['LinkedIn Jobs', 'Rozee.pk', 'Indeed'],
   'Posted within': 'Past week',
@@ -326,8 +326,7 @@ const geminiErr = (code, message, extra = {}) => ({ error: { code, message, ...e
 
   // 15) Multiple roles x locations: every combination is searched on every board
   const queries = [];
-  const multiForm = { ...baseForm, Roles: ['Flutter Developer', 'AI Engineer'], Locations: ['Lahore', 'Karachi'],
-    'Other locations (comma-separated)': 'Remote', 'Maximum leads': '50',
+  const multiForm = { ...baseForm, Roles: ['Flutter Developer', 'AI Engineer'], 'Locations (cities or countries, comma-separated)': 'Lahore, Karachi', 'Quick-pick locations': ['Remote'], 'Maximum leads': '50',
     'Ranking method': 'No ranking (save all)', 'Location filter': 'Keep all results' };  // every search succeeds -> no broadening
   await runWorkflow({ form: multiForm, existingRows: [], mocks: { ...okMocks, firecrawl: (b, n) => { queries.push(b.query); return uniqueMock(b, n); } } });
   if (process.env.DEBUG) console.log(queries.slice(0, 18).join("\n"));
@@ -342,7 +341,7 @@ const geminiErr = (code, message, extra = {}) => ({ error: { code, message, ...e
   assert.strictEqual(combosSeen.size, 18, '2 roles x 3 locations x 3 boards all searched');
 
   // 16) Location filter: only Lahore picked -> Karachi jobs skipped; "Keep all" -> kept
-  const lahoreOnly = { ...baseForm, Locations: ['Lahore'], 'Maximum leads': '25' };
+  const lahoreOnly = { ...baseForm, 'Locations (cities or countries, comma-separated)': 'Lahore', 'Maximum leads': '25' };
   const r16 = await runWorkflow({ form: lahoreOnly, existingRows: [], mocks: okMocks });
   const kar16 = r16.appended.Leads.filter((l) => /karachi/i.test(`${l.Location} ${l['Job Title']}`));
   console.log('16a Strict location:', `saved=${r16.appended.Leads.length}`, `karachiSaved=${kar16.length}`, `wrongLocation=${r16.appended['Run Log'][0]['Wrong Location']}`);
@@ -353,12 +352,12 @@ const geminiErr = (code, message, extra = {}) => ({ error: { code, message, ...e
   assert.ok(kar16b.length > 0);
 
   // 17) Country pick accepts its cities: "Pakistan (anywhere)" keeps Lahore AND Karachi
-  const r17 = await runWorkflow({ form: { ...baseForm, Locations: ['Pakistan (anywhere)'], 'Maximum leads': '25' }, existingRows: [], mocks: okMocks });
+  const r17 = await runWorkflow({ form: { ...baseForm, 'Locations (cities or countries, comma-separated)': '', 'Quick-pick locations': ['Pakistan'], 'Maximum leads': '25' }, existingRows: [], mocks: okMocks });
   console.log('17 Country:', `saved=${r17.appended.Leads.length}`, `karachi=${r17.appended.Leads.filter((l) => /karachi/i.test(l.Location)).length}`);
   assert.ok(r17.appended.Leads.some((l) => /karachi/i.test(l.Location)) && r17.appended.Leads.some((l) => /lahore/i.test(l.Location)));
 
   // 18) Old single-text form fields still work
-  const oldForm = { ...baseForm, Roles: undefined, Locations: undefined, 'Role or skill keywords': 'Flutter developer, UI/UX Designer', Location: 'Lahore / Remote' };
+  const oldForm = { ...baseForm, Roles: undefined, 'Locations (cities or countries, comma-separated)': undefined, 'Role or skill keywords': 'Flutter developer, UI/UX Designer', Location: 'Lahore / Remote' };
   const r18 = await runWorkflow({ form: oldForm, existingRows: [], mocks: okMocks });
   console.log('18 Old fields:', r18.appended['Run Log'][0].Status, `roles="${r18.appended['Run Log'][0].Roles}"`);
   assert.strictEqual(r18.appended['Run Log'][0].Roles, 'Flutter developer, UI/UX Designer');
@@ -392,6 +391,39 @@ const geminiErr = (code, message, extra = {}) => ({ error: { code, message, ...e
   const r22 = await runWorkflow({ form: { ...baseForm, 'Job boards': ['Rozee.pk'], 'Ranking method': 'No ranking (save all)' }, existingRows: [], mocks: { ...okMocks, firecrawl: uniqueMock } });
   console.log('22 Single board:', r22.appended['Run Log'][0].Status, JSON.stringify(byBoard(r22.appended.Leads)));
   assert.strictEqual(r22.appended.Leads.length, 10);
+
+  // 23) Worldwide: typed "Berlin, London" -> Munich/Paris jobs skipped, Berlin/London kept, unknown places kept
+  const cityMock = (b, n) => {
+    const places = ['Berlin, Germany', 'Munich, Germany', 'London, England, United Kingdom', 'Paris, France', 'Lisbon', 'Remote'];
+    return { success: true, data: { web: places.map((pl, i) => ({ url: `https://www.linkedin.com/jobs/view/${6000000000 + n * 10 + i}`,
+      title: `W${n}x${i} hiring Flutter Developer in ${pl} | LinkedIn`, description: '1 day ago' })) } };
+  };
+  const world = { ...baseForm, 'Locations (cities or countries, comma-separated)': 'Berlin, London', 'Job boards': ['LinkedIn Jobs'], 'Ranking method': 'No ranking (save all)', 'Maximum leads': '25' };
+  const r23 = await runWorkflow({ form: world, existingRows: [], mocks: { ...okMocks, firecrawl: cityMock } });
+  const locs23 = r23.appended.Leads.map((l) => l.Location);
+  console.log('23 Worldwide cities:', `saved=${locs23.length}`, [...new Set(locs23.map((x) => x.split(',')[0]))].join(' | '), `wrongLocation=${r23.appended['Run Log'][0]['Wrong Location']}`);
+  assert.ok(!locs23.some((l) => /munich|paris/i.test(l)), 'other known cities skipped');
+  assert.ok(locs23.some((l) => /berlin/i.test(l)) && locs23.some((l) => /london/i.test(l)), 'picked cities kept');
+
+  // 24) Country typed: "Germany" accepts Berlin and Munich, rejects London/Paris
+  const r24 = await runWorkflow({ form: { ...world, 'Locations (cities or countries, comma-separated)': 'Germany' }, existingRows: [], mocks: { ...okMocks, firecrawl: cityMock } });
+  const locs24 = r24.appended.Leads.map((l) => l.Location);
+  console.log('24 Country:', [...new Set(locs24.map((x) => x.split(',')[0]))].join(' | '));
+  assert.ok(locs24.some((l) => /munich/i.test(l)) && locs24.some((l) => /berlin/i.test(l)) && !locs24.some((l) => /london|paris/i.test(l)));
+
+  // 25) "Anywhere (no location filter)": no location in the query, nothing filtered
+  let q25 = '';
+  const r25 = await runWorkflow({ form: { ...world, 'Locations (cities or countries, comma-separated)': '', 'Quick-pick locations': ['Anywhere (no location filter)'] }, existingRows: [],
+    mocks: { ...okMocks, firecrawl: (b, n) => { q25 = q25 || b.query; return cityMock(b, n); } } });
+  console.log('25 Anywhere:', `query="${q25}"`, `wrongLocation=${r25.appended['Run Log'][0]['Wrong Location']}`);
+  assert.ok(!/"Anywhere"|anywhere/i.test(q25.replace(/-"[^"]+"/g, '')), 'no location term in query');
+  assert.strictEqual(Number(r25.appended['Run Log'][0]['Wrong Location']), 0);
+
+  // 26) Typed + quick-pick are combined; validation message for no location
+  const r26 = await runWorkflow({ form: { ...baseForm, 'Locations (cities or countries, comma-separated)': 'Toronto', 'Quick-pick locations': ['Remote', 'Canada'] }, existingRows: [], mocks: okMocks });
+  console.log('26 Combined:', `locations="${r26.appended['Run Log'][0].Locations}"`);
+  assert.strictEqual(r26.appended['Run Log'][0].Locations, 'Toronto, Remote, Canada');
+  await assert.rejects(runWorkflow({ form: { ...baseForm, 'Locations (cities or countries, comma-separated)': '', 'Quick-pick locations': [] }, existingRows: [], mocks: okMocks }), /at least one location/);
 
   console.log('\nAll checks passed.');
 })().catch((e) => { console.error(e); process.exit(1); });
