@@ -3,3 +3,7 @@
 node_modules/
 __pycache__/
 .DS_Store
+jword_run/
+applicant_profile.json
+*.pdf
+/jword_*.xlsx

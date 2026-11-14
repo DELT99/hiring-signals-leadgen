@@ -111,6 +111,15 @@ def export(tmp, name="leads.xlsx"):
     return res, rows("Leads"), rows("Run Log")
 
 
+def rejected(row, key):
+    """Count for one reason in the Run Log 'Rejected (reasons)' cell."""
+    label = jword.REJECT_REASONS[key]
+    for part in str(row.get("Rejected (reasons)") or "").split("; "):
+        if part.startswith(label + ":"):
+            return int(part.rsplit(":", 1)[1])
+    return 0
+
+
 BASE = ["init", "--mode", "clients", "--roles", "Flutter Developer", "--locations", "London",
         "--offer", "Flutter agency building cross-platform mobile apps with Dart", "--target", "10"]
 TESTS = []
@@ -135,9 +144,13 @@ def unit_helpers():
     assert J.is_listing("Flutter Developer", "https://www.itjobswatch.co.uk/find/Flutter-jobs-in-London")
     assert J.is_listing("Flutter Jobs", "https://www.itjobswatch.co.uk/jobs/london/flutter.do")
     assert not J.is_listing("Senior Flutter Engineer", "https://builtin.com/job/senior-flutter-engineer/9139912")
+    assert J.is_listing("Remote LLM Jobs", "https://arc.dev/remote-jobs/large-language-models")
+    assert J.add_email({"url": "u", "snippet": ""}, "m.rivera@company.com", "https://jobgether.com/x", from_posting=True) == "placeholder/sample address"
+    assert J.is_listing("Remote AI / LLM Engineer Jobs", "https://scoutify.com/remote-jobs/ai-llm-engineer")
+    assert not J.is_listing("AI Software Engineer - Rollstack", "https://www.remotefront.com/remote-jobs/rollstack-ai-software-engineer-w18ou")
     assert not J.is_listing("Mobile App Developer Job in Lahore at Acme", "https://rozee.pk/acme-jobs-1")
     assert J.parse_age("Posted 3 weeks ago")[0] == 21 and J.parse_age("yesterday")[0] == 1
-    assert J.parse_age("Posted 15 Days Ago")[0] == 15 and J.parse_age("Reposted 2 Months Ago")[0] == 60
+    assert J.parse_age("Posted 15 Days Ago")[0] == 15 and J.parse_age("Reposted 2 Months Ago")[0] == 56
     d = (dt.date.today() - dt.timedelta(days=5)).strftime("%d.%m.%Y")
     assert J.parse_age(f"Posted: {d}")[0] == 5
     assert J.parse_age("Published Aug 20, 2025")[0] > 300
@@ -151,6 +164,10 @@ def unit_helpers():
     assert J.LocationMatcher(["United States"]).match("Latin America")[0] != "match"
     assert J.parse_title("Senior Flutter Engineer at AJ Bell", "")["company"] == "AJ Bell"
     assert J.parse_title("Flutter Developer", "https://acme.recruitee.com/o/flutter")["company"] == "acme"
+    assert J.parse_age("Reviewed: Mon, May 11, 2026")[0] > 150 and J.parse_age("Reviewed: Tue, Nov 10, 2026") is not None
+    assert J.PAYWALL_HINTS.search("The complete job description is available to premium members.")
+    assert J.PAYWALL_HINTS.search("The job description is available to subscribers.")
+    assert not J.PAYWALL_HINTS.search("Apply now on our careers page")
     assert J.split_list("UI/UX Designer, AI Engineer") == ["UI/UX Designer", "AI Engineer"]
     assert J.display_url("https://www.ajbell.co.uk/group/v/744?utm_source=x") == "https://www.ajbell.co.uk/group/v/744"
     assert J.normalize_job_url("https://diversityjobsgroup.com/?p=880687") == "https://diversityjobsgroup.com/?p=880687"
@@ -169,8 +186,8 @@ def ai_mode_clients_full_run():
             by[l["Source"]] = by.get(l["Source"], 0) + 1
         assert max(by.values()) <= 4 and len(by) >= 3, by                        # varied sources
         assert not any("Manchester" in str(l["Location"]) for l in leads)         # wrong location
-        assert log[0]["Agency"] > 0 and log[0]["Closed"] > 0 and log[0]["Wrong Location"] > 0
-        assert all(l["Contact"] == "Sam Lee (CTO)" and str(l["Contact Link"]).startswith("https://www.linkedin.com/in/") for l in leads)
+        assert rejected(log[0], "agency") > 0 and rejected(log[0], "closed") > 0 and rejected(log[0], "wrong_location") > 0
+        assert all(l["Contact"] == "Sam Lee (CTO)" and str(l["Contact Source"]).startswith("https://www.linkedin.com/in/") for l in leads)
         assert len({l["Job URL"] for l in leads}) == 10
         assert log[0]["Saved"] == 10 and log[0]["Ranking"] == "AI (Claude)" and log[0]["Page Checked"] >= 10
         assert all("site:" not in q for q in stats["queries"])
@@ -195,7 +212,7 @@ def page_check_fills_unnamed_employer():
         drive(tmp, results_fn=results, verdict_fn=verdict, page_fn=page)
         _, (leads, _), (log, _) = export(tmp)
         assert leads and all(l["Company"] == "Hyperlayer" and l["Why It Fits"] == "Fintech hiring Flutter devs." for l in leads), leads
-        assert log[0]["Agency"] >= 1                        # the one whose employer stayed unknown
+        assert rejected(log[0], "agency") >= 1                        # the one whose employer stayed unknown
         assert all(l["Job URL"].startswith("https://grabjobs.co/") for l in leads)
 
 
@@ -219,7 +236,7 @@ def page_check_rejects_closed_and_stale():
                     {"open": True, "posted": "1 day ago"}][flip["n"] % 3]
         drive(tmp, page_fn=page)
         _, (leads, _), (log, _) = export(tmp)
-        assert all(l["Posted"] in ("1 day ago", "2 days ago") for l in leads), [l["Posted"] for l in leads]
+        assert all(str(l["Posted"]).endswith(("(1 day ago)", "(2 days ago)")) for l in leads), [l["Posted"] for l in leads]
 
 
 @test
@@ -230,7 +247,7 @@ def keyword_mode_skips_agencies_without_review():
         _, (leads, _), (log, _) = export(tmp)
         assert stats["review"] == 0 and final["status"] == "target_reached"
         assert all(str(l["Why It Fits"]).startswith("Keyword score") for l in leads)
-        assert log[0]["Agency"] > 0
+        assert rejected(log[0], "agency") > 0
 
 
 @test
@@ -239,7 +256,7 @@ def jobs_mode_keeps_agency_posts():
         run(tmp, *BASE, "--mode", "jobs", "--ranking", "none", "--verify-open", "no")
         drive(tmp)
         _, (leads, _), (log, _) = export(tmp)
-        assert log[0]["Agency"] == 0 and all(l["Status"] == "To apply" and l["Contact"] in (None, "") for l in leads)
+        assert rejected(log[0], "agency") == 0 and all(l["Application Status"] == "To apply" and l["Contact"] in (None, "") for l in leads)
 
 
 @test
@@ -252,7 +269,7 @@ def low_scores_are_skipped():
             return v
         drive(tmp, verdict_fn=verdict)
         _, (leads, _), (log, _) = export(tmp)
-        assert all(l["Fit Score"] == 5 for l in leads) and log[0]["Low Fit"] > 0
+        assert all(l["Fit Score"] == 5 for l in leads) and rejected(log[0], "low_fit") > 0
 
 
 @test
@@ -337,7 +354,7 @@ def contacts_need_a_source_and_evidence():
         assert "Email" in cols and "Apply Via" in cols and "Next Step" in cols
         import openpyxl
         wb = openpyxl.load_workbook(Path(tmp) / "leads.xlsx")
-        assert wb.sheetnames == ["Leads", "Contacts", "Applications", "Run Log"], wb.sheetnames
+        assert wb.sheetnames == ["Leads", "Contacts", "Applications", "Run Log", "Excluded"], wb.sheetnames
         contacts = list(wb["Contacts"].iter_rows(values_only=True))
         assert contacts[0] == tuple(jword.CONTACT_COLUMNS) and len(contacts) >= 3
         row = next(l for l in leads_x if l["Job URL"] == leads[0]["url"])

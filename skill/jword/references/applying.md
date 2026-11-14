@@ -1,6 +1,6 @@
 # Applying in the browser
 
-**Before you start:** the profile passes `profile-check`, the user has chosen a submit mode (Step 3), and each job has a prepared cover letter and answers (status `prepared`). If a browser skill is listed (`chrome-browser`, `built-in-browser`, `computer-use`), load it first and follow its rules on tabs, permissions and dialogs.
+**Before you start:** the profile passes `profile-check`, the user has chosen a submit mode (Step 3), and each job has a prepared cover letter and answers (status `prepared`). If a browser skill is listed (`chrome-browser`, `built-in-browser`, `computer-use`), load it first and follow its rules on tabs, permissions and dialogs. Emails to companies are a separate step (`outreach.md`).
 
 ## Which jobs
 `python3 SKILL_DIR/scripts/jword.py plan` → `todo.to_apply`. Check `apply_via` for each:

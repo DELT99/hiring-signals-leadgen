@@ -40,6 +40,17 @@ Good `angle` (clients): specific and short, e.g. *"Offer a 2-dev Flutter squad t
 
 Good `angle` (jobs): *"Lead with your Riverpod + Firebase app that has 10k installs; they mention Firebase twice."*
 
+## Eligibility (jobs mode)
+If the posting limits who can apply ("Remote, US only", "must be authorised to work in the UK", "U.S. visa required", "EU residents only") and the user's profile or offer doesn't show they qualify, cap `fit_score` at **2** and say so in `fit_reason` (e.g. *"Remote but US work authorisation required"*). Unpaid roles are a 1 when the user wants paid work only.
+
+**Seniority:** if the posting asks for far more experience than the profile shows (e.g. *5+ years* or *Senior/Staff* for a student or junior), cap at **2**. One or two years short is fine: score on the skills.
+
+## Extra fields (jobs mode)
+- `employment_type`: Full-time, Part-time, Contract, Internship, Freelance (as the posting says; empty if not stated).
+- `skills_matched`: the job's required skills that the CV really shows, e.g. `Flutter, Dart, Firebase`.
+- `gaps`: required items the CV doesn't show, e.g. `3+ years, native iOS`. Be honest: gaps are shown to the user, not hidden.
+- Only judge from the posting text and the CV. Don't assume a salary, a seniority level or remote eligibility that isn't stated.
+
 ## Tips
 - Be consistent: the same evidence should get the same score across candidates.
 - Don't reward keyword stuffing. A snippet that only *lists* the role among many isn't a strong signal.

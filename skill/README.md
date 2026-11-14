@@ -1,62 +1,59 @@
-# Jword: the Claude skill edition
+# Jword guide (skill details)
 
-**Jword** turns Claude into a job-search and lead-gen assistant, with **no n8n, no API keys and no setup**. It finds open jobs (or companies that are hiring), finds the companies' published contact emails, prepares tailored applications, fills and submits forms in your browser, and emails applications through Gmail. **You choose each step, and every step can be skipped.**
+Install steps are in the **[main README](../README.md)** (Claude chat first, then Claude Code). This page explains what each stage does, what you control, and what you get.
 
-> *"Use Jword: find 10 Flutter developer jobs in Berlin or remote and apply for me. My CV is attached."*
+## The questions Jword asks
+1. **Mode:** find jobs for me, or find clients (companies hiring).
+2. **Roles** and **locations** (cities, countries, Remote, Anywhere).
+3. **How recently should the jobs have been posted?** Last 24 hours · 3 days · 7 days · 14 days · 30 days · 60 days · a custom range. Free text works too: *"last 10 days"*, *"between Nov 1 and Nov 10"*, *"this week"*.
+4. **Your CV** (or a short summary) for jobs mode, or **what you sell** for clients mode.
+5. **Platforms:** any, company career pages / ATS, LinkedIn, Indeed, Wellfound, Built In.
+6. **Contacts?** Jobs only / + contact research / + contact research and personalized Gmail outreach.
+7. After the job list: **how to handle emails** (contacts only / in chat / Gmail drafts / approve each send / capped auto-send), and, if a browser is available, **how to handle forms**.
 
-## What it does
-| Stage | What happens | Needs |
-|---|---|---|
-| 1. **Find** | Searches the open web for every role × location, filters out listing pages, closed or expired jobs, wrong locations and agency posts, scores each job against your CV, and opens qualified postings to confirm they're still open | Web search |
-| 2. **Contacts** *(optional)* | Finds emails the company **publishes**: careers@, HR, recruiters, founders, from the job post and the company's careers/contact/team pages. Every email is saved with the page it came from; guesses are refused | Web search |
-| 3. **Prepare** *(optional)* | Builds your applicant profile from your CV, asks once for anything missing (work authorization, notice period, salary…), and writes a cover letter and answers per job, **only from your real details** | Your CV or details |
-| 4. **Apply** *(optional)* | Fills application forms (Greenhouse, Lever, Ashby, Workable, Recruitee…) and/or emails applications via Gmail, in the mode you pick | A browser (Claude in Chrome or the Claude desktop app), and the Gmail connector for email |
-| 5. **Deliver** | An Excel tracker, plus a **status list in chat**: applied, needs you, emailed, skipped, and what to do next | – |
+## The posting window (strict)
+- A job is kept only if its **original posting date** is shown and falls inside the window. The date can come from the job page (preferred; Jword opens every shortlisted job) or the search result.
+- "Updated", "Reposted" and "Reviewed" dates are **not** posting dates. They can only prove a job is too old.
+- Fuzzy dates are judged cautiously: with a 14-day window, "2 weeks ago" (14–20 days) is **not** accepted.
+- Jobs with **no verifiable date are excluded** by default. If you explicitly allow them, they go to a separate **Undated Jobs** sheet.
+- The window is **never widened** to reach the number you asked for. If only 6 jobs qualify, you get 6, and the **Excluded** sheet lists every dropped result and why.
 
-**You stay in control:**
-- **Submitting:** *ask me before each submit* (default), *auto-submit only when every answer comes from my profile*, or *fill the forms and I'll press Submit*.
-- **Emails:** *Gmail drafts* (default), *send after I approve each*, or *auto-send job applications to published careers/HR addresses* (max 10 per run). Cold sales outreach is never auto-sent.
-- **Handed back to you** (marked **Needs you**, with a precise next step): logins and account creation, CAPTCHAs, assessments, questions your profile doesn't answer, and **CV uploads Claude can't do** ("Upload your CV and press Submit: tab 3").
-- **LinkedIn, Indeed, Glassdoor and ZipRecruiter** forbid automated applying, so Jword prepares your answers and gives you the link, but never submits there.
+## Contacts
+- **Named:** recruiters, technical recruiters, HR, talent acquisition, hiring and recruitment managers, founders or CTOs who hire.
+- **Generic:** careers@, jobs@, hr@, recruitment@, hiring@, talent@, people@, info@, contact@.
+- Only addresses **published on a public page**, saved with that page and the quoted text. Guessed or pattern-built addresses are refused.
+- **Verification:** *in the job post*, *company website*, or *company ATS page* = verified (can be emailed). *Third-party page* = unverified (listed, never emailed). Named people without a public email are listed as *No public email*.
 
-## Install or update (2 minutes)
-1. Download **[`dist/jword.zip`](../dist/jword.zip)**: open it on GitHub → **Download raw file**. **Don't unzip it.**
-2. In Claude, go to **Customize → Skills**. *Updating?* Click **⋯** next to the old Jword → **Delete** first.
-3. Click **+** → **Create skill** → **Upload a skill**, choose `jword.zip`, and toggle it **on**.
-4. For applying and emailing, also turn on:
-   - **Web search** in your chat, needed for everything
-   - **A browser** for filling forms: the **Claude in Chrome** extension, or the **Claude desktop app**'s built-in browser
-   - **Gmail** for emailing: **Settings → Connectors → Gmail**
+## Emails (Gmail connector)
+- **One email per contact**, each with its own subject and body, written for that company, job and person from your real CV. Near-copies across companies, unfilled placeholders and repeat contacts are refused by the engine.
+- **Modes:** *contacts only*, *prepare in chat*, *Gmail drafts* (recommended), *ask before each send*, or *capped auto-send* (job applications to verified hiring addresses only, max 10 per run).
+- **B2B (clients mode)** emails are never auto-sent, and always include an opt-out line.
+- Every draft or send is recorded with the **id Gmail returned**. No id means it's recorded as failed, never as sent.
+- **Re-runs** never re-email an address that was already drafted or emailed in an earlier tracker.
+- Your CV can be attached through the Gmail connector. If attaching isn't possible, Jword creates a draft for you to attach it and send.
 
-Skills need *Code execution and file creation* on (it's on by default on most plans; Team/Enterprise admins may need to enable it).
+## Forms (optional)
+Fills Greenhouse, Lever, Ashby, Workable, Recruitee and similar forms in Claude in Chrome or the desktop app's browser, following your submit mode. Logins, CAPTCHAs, tests, payments, unanswered questions and CV uploads it can't do are handed back to you as **Needs you**, with the exact next step. LinkedIn, Indeed, Glassdoor and ZipRecruiter applications are never automated.
 
-## Use it
-- *"Find 10 AI engineer jobs in London or remote that fit my CV (attached), get the HR emails, and apply."*
-- *"Find 25 Flutter jobs on company career pages in Germany. Just the list, no applying."*
-- *"Find companies hiring React developers in Dubai. We're a dev agency. Find their emails and draft outreach in Gmail."* (clients mode)
-- *"Run Jword again"* + attach last time's Excel: no repeats, and all sheets carry on.
-
-## The Excel file
-| Sheet | Columns |
+## The Excel tracker
+| Sheet | What's in it |
 |---|---|
-| **Leads** | Date Added, Mode, Company, Job Title, Location, Posted, Source, Job URL, Fit Score, Why It Fits, Pitch / Tip, Contact, Contact Link, **Email**, **Apply Via**, **Status**, **Next Step**, Run ID |
-| **Contacts** | Company, Name, Role, Email, Type (Generic/Person), **Found On** (the page it came from), Run ID |
-| **Applications** | Date, Company, Job Title, Job URL, Apply Via, Status, Next Step, Cover Letter / Message, Answers Used, Run ID |
-| **Run Log** | One row per run: inputs, leads per source, skip reasons, emails found, applied / emailed / needs you, status |
+| **Leads** | Company, job, location, employment type, **posted date**, **posting window**, **date source**, source, job URL, **verification**, fit score, why it fits (with gaps), relevant skills, pitch, contact, email, contact source, apply via, **application / outreach / Gmail status**, next step |
+| **Contacts** | Company, name, role, email, named/generic, **source URL**, **verification**, **associated job(s)**, outreach status |
+| **Applications** | Application status, cover letter, answers, **outreach to / subject / body**, **Gmail status (with id)**, next action |
+| **Run Log** | Window, roles, locations, platforms, agents used, totals, rejection reasons, duplicates, contacts verified vs unverified, Gmail drafts/sent/failed, limitations |
+| **Excluded** | Every dropped result with its reason (outside the window, no date, closed, duplicate, wrong location…) |
+| **Undated Jobs** | Only when you allowed undated listings |
 
-**Statuses:** To apply · Prepared · Applied · Needs you · Draft ready · Emailed · Skipped · Failed (clients mode starts at *New*).
+**Statuses:** application: To apply · Prepared · Applied · Needs you · Skipped · Failed. Outreach: Prepared · Draft created · Sent · Failed.
+
+**Run it again:** attach the last tracker and say *"run Jword again"*. Known jobs are skipped, old jobs are re-checked (closed ones are marked *Closed since last run*), statuses are kept, and nobody is emailed twice.
 
 ## Honest limits
-- **Usage:** each run uses your Claude plan's usage; applying is the heaviest part. Default is 10 jobs, maximum 25.
-- **Coverage:** web search finds what it indexes; LinkedIn and Indeed jobs appear only occasionally.
-- **Emails:** many companies publish **no** address and use forms instead (in testing, Waracle uses only a talent-pool form). Jword reports that rather than guessing.
-- **Forms vary:** CV upload depends on the browser tool; when it can't upload, the job becomes *Needs you*.
-- **You're responsible** for what's sent in your name, and for local email rules in sales outreach (CAN-SPAM, GDPR/PECR). Review drafts.
-- It runs when you ask, not on a schedule.
+- Web search only finds what it indexes. LinkedIn and Indeed jobs appear only sometimes, and many boards don't show dates (those jobs are excluded under the strict rule).
+- Many companies publish **no** email, only a form. Jword reports that rather than guessing.
+- Each run uses your Claude plan's usage. Contacts and emails are the heaviest stages, so start with 5–10 jobs.
+- You're responsible for what's sent in your name and for commercial-email rules (CAN-SPAM, GDPR/PECR).
 
-## Development
-```bash
-python3 skill/jword/tests/test_jword.py      # 18 offline tests
-cd skill && zip -r ../dist/jword.zip jword -x '*/__pycache__/*'
-```
-Guides Claude follows: `references/scoring-rubric.md`, `sources.md`, `contacts.md`, `applicant-profile.md`, `applying.md`, `outreach.md`. Tuning constants are at the top of `scripts/jword.py`.
+## For developers
+Engine commands (`scripts/jword.py`): `init` · `next` · `ingest` · `apply` · `plan` · `settings` · `contacts` · `outreach` · `outbox` · `gmail` · `track` · `profile-check` · `shards` · `log` · `status` · `report` · `export`. Claude follows `SKILL.md` and the guides in `references/` (`scoring-rubric`, `sources`, `contacts`, `applicant-profile`, `applying`, `outreach`, `orchestration`). Edit only `skill/jword/`, then run `python3 tools/build_skill.py`.

@@ -30,6 +30,7 @@ Commands (each prints JSON):
 from __future__ import annotations
 
 import argparse
+import difflib
 import datetime as dt
 import json
 import math
@@ -65,11 +66,17 @@ LISTING_URL = re.compile(
 LISTING_TITLE = [
     re.compile(r"\b\d[\d,]*\+?\s+(\w+\s+){0,5}jobs\b", re.I),      # "54,244 Flutter Developer Jobs"
     re.compile(r"\bjobs\s+(in|near|at|for)\b", re.I),               # "Flutter Developer Jobs in London"
+    re.compile(r"^\s*(remote|top|best|latest|new)\b[^|:]{0,50}\bjobs\s*$", re.I),   # "Remote LLM Jobs"
     re.compile(r"\(with salaries\)|\bsalar(y|ies)\b|\bopen positions\b", re.I),
     re.compile(r"\b(vacancies|job openings|jobs and careers)\b", re.I),
     re.compile(r"^jobs?\s+(in|for)\b", re.I),
 ]
 TRACKING_PARAMS = re.compile(r"^(utm_.*|trk.*|ref.*|src|source|from|fbclid|gclid|mc_.*|_hs.*|tk|cid|campaign.*)$", re.I)
+# Listings you can't apply to without paying (membership sites that also hide the employer)
+PAYWALL_HINTS = re.compile(
+    r"available to (premium )?(members|subscribers)|premium membership|subscribe (today|now) to (get|see|view|unlock)|"
+    r"(sign in|log in|login|register) to (view|see) (the )?(full|complete|job)|unlock (the )?(full )?job", re.I)
+PAYWALL_DOMAINS = {"virtualvocations.com", "flexjobs.com"}
 # A recruitment agency advertising for a hidden client (not a direct lead in clients mode)
 AGENCY_HINTS = re.compile(
     r"\b(recruitment|recruiting|resourcing|staffing|headhunt\w*|talent solutions|"
@@ -95,6 +102,15 @@ QUERY_STYLES = [
     "{role} jobs {loc} posted this week",
     '"{role}" {loc} "apply now" {year}',
 ]
+# For "Remote": plain "<role> remote job" queries return mostly paywalled remote-job aggregators
+# (live test, Nov 2026); remote-first wording surfaces real employers and their ATS pages.
+REMOTE_QUERY_STYLES = [
+    "remote-first startup hiring {role} work from anywhere apply",
+    "{role} remote-first company careers apply Ashby Lever Greenhouse",
+    '"{role}" fully remote team hiring {month}',
+    "{role} 100% remote role apply now {year}",
+    "{role} distributed team remote worldwide job opening",
+]
 CLOSED_PHRASES = [
     "no longer accepting applications", "no longer accepting", "job is no longer available",
     "job no longer available", "no longer available", "this job has expired", "job has expired",
@@ -106,7 +122,6 @@ CLOSED_PHRASES = [
     "this job is no longer", "listing has expired", "advert has expired",
 ]
 CLOSED_RE = re.compile("|".join(re.escape(p) for p in CLOSED_PHRASES), re.I)
-MAX_AGE_DAYS = {"day": 2, "week": 10, "month": 35, "any": 0}
 
 LOCATION_GROUPS = {
     "united states": (["united states", "usa", "u.s."], ["new york", "san francisco", "seattle", "austin", "boston", "chicago", "los angeles", "denver", "atlanta", "miami", "dallas", "washington dc"]),
@@ -141,19 +156,39 @@ REMOTE_ALIASES = ["remote", "work from home", "wfh", "fully remote", "remote-fir
 ANYWHERE_ALIASES = ["anywhere", "worldwide", "any location", "global"]
 OTHER_KNOWN = ["europe", "emea", "apac", "latam", "middle east"]
 
-LEAD_COLUMNS = ["Date Added", "Mode", "Company", "Job Title", "Location", "Posted", "Source",
-                "Job URL", "Fit Score", "Why It Fits", "Pitch / Tip", "Contact", "Contact Link",
-                "Email", "Apply Via", "Status", "Next Step", "Run ID"]
-CONTACT_COLUMNS = ["Company", "Name", "Role", "Email", "Type", "Found On", "Run ID"]
-APPLICATION_COLUMNS = ["Date", "Company", "Job Title", "Job URL", "Apply Via", "Status", "Next Step",
-                       "Cover Letter / Message", "Answers Used", "Run ID"]
-RUNLOG_COLUMNS = ["Run ID", "Date", "Time", "Run By", "Mode", "Roles", "Locations", "Posted Within",
-                  "Ranking", "Min Score", "Target", "Saved", "Saved By Source", "Low Fit", "Duplicates",
-                  "Closed", "Wrong Location", "Agency", "Not A Job", "Page Checked", "Searches",
-                  "Candidates Reviewed", "Emails Found", "Applied", "Emailed", "Needs You", "Status", "Notes"]
-
-# ---- contacts & applying -------------------------------------------------------------
+LEAD_COLUMNS = ["Date Added", "Mode", "Company", "Job Title", "Location", "Employment Type", "Posted",
+                "Posting Window", "Date Source", "Source", "Job URL", "Verification", "Fit Score", "Why It Fits",
+                "Relevant Skills", "Pitch / Tip", "Contact", "Email", "Contact Source", "Apply Via",
+                "Application Status", "Outreach Status", "Gmail Status", "Next Step", "Run ID"]
+CONTACT_COLUMNS = ["Company", "Name", "Role", "Email", "Type", "Source URL", "Verification", "Associated Job",
+                   "Outreach Status", "Run ID"]
+APPLICATION_COLUMNS = ["Date", "Company", "Job Title", "Job URL", "Apply Via", "Application Status", "Cover Letter",
+                       "Application Answers", "Outreach To", "Outreach Subject", "Outreach Body", "Gmail Status",
+                       "Next Action", "Run ID"]
+RUNLOG_COLUMNS = ["Run ID", "Date", "Time", "Run By", "Mode", "Roles", "Locations", "Posting Window", "Undated Jobs",
+                  "Platforms", "Agents Used", "Ranking", "Min Score", "Target", "Saved", "Saved By Source", "Searches",
+                  "Candidates Reviewed", "Page Checked", "Rejected (reasons)", "Duplicates", "Outside Window", "No Date",
+                  "Contacts Verified", "Contacts Unverified", "Gmail Drafts", "Gmail Sent", "Gmail Failed", "Applied",
+                  "Needs You", "Status", "Errors / Limitations"]
+EXCLUDED_COLUMNS = ["Run ID", "Title / Company", "URL", "Reason", "Detail"]
+# older Jword files used these names; they are renamed on import so repeated runs keep their history
+OLD_NAMES = {"Status": "Application Status", "Contact Link": "Contact Source", "Contact LinkedIn": "Contact Source",
+             "Job Board": "Source", "Found On": "Source URL", "Cover Letter / Message": "Cover Letter",
+             "Answers Used": "Application Answers", "Posted Within": "Posting Window", "Notes": "Errors / Limitations"}
+EMAIL_MODES = {"contacts_only": "Find contacts only", "chat": "Prepare emails in chat",
+               "drafts": "Create Gmail drafts", "approve_each": "Send each after approval",
+               "auto": "Capped automatic sending (job applications only)"}
+SUBMIT_MODES = {"ask_each": "Ask before each submit", "auto_profile": "Submit when every answer is in the profile",
+                "fill_only": "Fill forms, user submits"}
+AUTO_SEND_CAP = 10
+OUTREACH_STATUSES = {"prepared": "Prepared", "draft": "Draft created", "sent": "Sent", "failed": "Failed",
+                     "skipped": "Skipped"}
+PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{2,40}\]|\{\{|\}\}|<[A-Z][A-Za-z ]{2,30}>|\bYOUR (NAME|COMPANY)\b|\bXXX+\b|lorem ipsum", re.I)
+OPT_OUT_RE = re.compile(r"not (a fit|interested|relevant)|opt.?out|unsubscribe|rather not hear|won'?t follow up|reply .?stop|let me know .{0,40}(stop|not)", re.I)
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+# Sample addresses job boards show as teasers (live test: jobgether's "m.rivera@company.com", "unlocked after you apply")
+PLACEHOLDER_DOMAINS = {"company.com", "example.com", "example.org", "domain.com", "email.com", "yourcompany.com",
+                       "companyname.com", "test.com", "sample.com"}
 FREEMAIL = {"gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk", "hotmail.com", "outlook.com", "live.com",
             "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "mail.com", "yandex.com", "msn.com"}
 GENERIC_LOCAL = {"careers", "career", "jobs", "job", "hr", "recruiting", "recruitment", "talent", "hiring", "people",
@@ -283,7 +318,8 @@ def is_listing(title: str, url: str) -> bool:
     return bool(LISTING_URL.search(path_q)) or any(p.search(title or "") for p in LISTING_TITLE)
 
 
-DATE_RX = (r"([A-Z][a-z]{2,8}\.? \d{1,2},? \d{4}|\d{1,2}(?:st|nd|rd|th)? [A-Z][a-z]{2,8},? \d{4}"
+DATE_RX = (r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+)?"
+           r"([A-Z][a-z]{2,8}\.? \d{1,2},? \d{4}|\d{1,2}(?:st|nd|rd|th)? [A-Z][a-z]{2,8},? \d{4}"
            r"|\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4})")
 
 
@@ -298,30 +334,184 @@ def parse_date(txt: str):
     return None
 
 
-def parse_age(text: str):
-    """(days, text) from '3 days ago', 'Posted: 05.05.2025', 'Published Aug 20, 2026', 'yesterday'..."""
-    t = str(text or "")
-    m = re.search(r"(\d+)\+?\s*(minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago", t, re.I)
+# ---------------------------------------------------------------- posting-date window (strict)
+# The user picks how recently jobs must have been posted. The window is a hard rule: a job is kept only
+# when its ORIGINAL posting date is known to fall inside it. "Updated / reposted / reviewed" dates are not
+# posting dates; they only prove the job is at least that old (so they can rule a job out, never in).
+
+UPDATED_WORDS = re.compile(r"(updated|reposted|re-posted|refreshed|reviewed|modified|edited|bumped|renewed)\W*$", re.I)
+POSTED_LABELS = r"(?:first seen|first indexed|date posted|posted on|posted|published on|published|listed on|listed|created|opened|date|reposted|re-posted|updated|last updated|reviewed|refreshed|modified)"
+WINDOW_PRESETS = {"24h": 1, "1d": 1, "day": 1, "today": 0, "3d": 3, "7d": 7, "week": 7, "14d": 14,
+                  "30d": 30, "month": 30, "60d": 60}
+MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split()
+
+
+def today_of(st=None) -> dt.date:
+    """The run's reference day (fixed at init so a run is judged consistently)."""
+    if st and st.get("config", {}).get("run_date"):
+        return dt.date.fromisoformat(st["config"]["run_date"])
+    return dt.date.today()
+
+
+def parse_loose_date(txt: str, today: dt.date):
+    """'2026-11-01', 'Nov 1', 'November 1 2026', '1 Nov', '01/11/2026' -> date (year defaults to the latest past one)."""
+    t = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", str(txt or "").strip().lower()).replace(",", " ")
+    t = re.sub(r"\s+", " ", t).strip(" .")
+    d = parse_date(t.title())
+    if d:
+        return d.date()
+    m = re.fullmatch(r"([a-z]{3})[a-z]*\.? (\d{1,2})|(\d{1,2}) ([a-z]{3})[a-z]*\.?", t)
     if m:
-        n, unit = int(m.group(1)), m.group(2).lower()
-        days = (0 if unit.startswith(("minute", "min", "hour", "hr")) else n if unit.startswith("day")
-                else n * 7 if unit.startswith(("week", "wk")) else n * 30 if unit.startswith(("month", "mo")) else n * 365)
-        return days, m.group(0)
-    m = re.search(r"\b(just now|today|just posted)\b", t, re.I)
-    if m:
-        return 0, m.group(0)
-    m = re.search(r"\byesterday\b", t, re.I)
-    if m:
-        return 1, m.group(0)
-    m = re.search(r"\b(?:posted|published|date posted|listed)[:\s]*(?:on\s+)?" + DATE_RX, t, re.I)
-    if m and (d := parse_date(m.group(1))):
-        return max(0, (dt.datetime.now() - d).days), m.group(1)
+        mon = (m.group(1) or m.group(4))[:3]
+        day = int(m.group(2) or m.group(3))
+        if mon in MONTHS:
+            try:
+                d = dt.date(today.year, MONTHS.index(mon) + 1, day)
+            except ValueError:
+                return None
+            return d if d <= today else d.replace(year=today.year - 1)
     return None
+
+
+def parse_window(spec: str, today: dt.date) -> dict | None:
+    """User's 'posted within' answer -> {label, start, end} (ISO dates, inclusive), or None for 'any time'.
+    Accepts: 24h, 3d, 7d, 14d, 30d, 60d, 'last 10 days', '2 weeks', 'this week', 'this month', 'today',
+    '2026-11-01..2026-11-10', 'between November 1 and November 10', 'from Nov 1 to Nov 10', 'since Nov 3'."""
+    s = re.sub(r"\s+", " ", str(spec or "").strip().lower())
+    s = re.sub(r"^(jobs )?(posted )?(with)?in (the )?|^(the )?(last|past) ", "", s).strip()
+    s = re.sub(r"^(last|past) ", "", s).strip()
+    if s in ("", "any", "any time", "anytime", "all"):
+        return None
+    days = None
+    if s in WINDOW_PRESETS:
+        days = WINDOW_PRESETS[s]
+    m = re.fullmatch(r"(\d+)\s*(h|hr|hrs|hours?|d|days?|w|wks?|weeks?|m|mo|months?)", s)
+    if m:
+        n, u = int(m.group(1)), m.group(2)
+        days = max(1, math.ceil(n / 24)) if u.startswith("h") else n * 7 if u.startswith("w") else n * 30 if u.startswith("m") else n
+    if s in ("this week", "current week"):
+        start = today - dt.timedelta(days=today.weekday())
+        return {"label": f"This week ({start.isoformat()} to {today.isoformat()})", "start": start.isoformat(), "end": today.isoformat()}
+    if s in ("this month", "current month"):
+        start = today.replace(day=1)
+        return {"label": f"This month ({start.isoformat()} to {today.isoformat()})", "start": start.isoformat(), "end": today.isoformat()}
+    if days is not None:
+        start = today - dt.timedelta(days=days)
+        label = "Today" if days == 0 else "Last 24 hours" if days == 1 else f"Last {days} days"
+        return {"label": f"{label} ({start.isoformat()} to {today.isoformat()})", "start": start.isoformat(), "end": today.isoformat()}
+    m = re.fullmatch(r"(?:since|after|from) (.+)", s)
+    if m and not re.search(r" (to|until|and|-) ", m.group(1)):
+        a = parse_loose_date(m.group(1), today)
+        if a:
+            return {"label": f"{a.isoformat()} to {today.isoformat()}", "start": a.isoformat(), "end": today.isoformat()}
+    m = (re.fullmatch(r"(?:between |from )?(.+?)\s*(?:\.\.| to | until | and | - | – )\s*(.+)", s))
+    if m:
+        a, b = parse_loose_date(m.group(1), today), parse_loose_date(m.group(2), today)
+        if a and b:
+            if a > b:
+                a, b = b, a
+            b = min(b, today)
+            return {"label": f"{a.isoformat()} to {b.isoformat()}", "start": a.isoformat(), "end": b.isoformat()}
+    fail(f"Could not understand the posting window '{spec}'. Use e.g. 24h, 3d, 7d, 14d, 30d, 60d, "
+         "'last 10 days', 'this week', or a range like 2026-11-01..2026-11-10.")
+
+
+def estimate_posting(text: str, today: dt.date | None = None, assume_posted: bool = False):
+    """Find a posting date in text. Returns {min, max (days ago; max None = unbounded), text, kind} or None.
+    kind = 'posted' (original posting date) or 'updated' (reposted / updated / reviewed date)."""
+    t = str(text or "")
+    today = today or dt.date.today()
+    found = []
+
+    def kind_at(pos, label=""):
+        before = t[max(0, pos - 22):pos]
+        # "first seen" (when a board first indexed it) also only bounds the original date: posted on/before it
+        if re.search(r"updated|reposted|re-posted|refreshed|reviewed|modified|edited|renewed|first seen|first indexed", label, re.I) or UPDATED_WORDS.search(before.strip()):
+            return "updated"
+        return "posted"
+
+    m = re.search(r'"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})', t)
+    if m:
+        d = dt.date.fromisoformat(m.group(1))
+        found.append((-1, {"min": (today - d).days, "max": (today - d).days, "text": m.group(1), "kind": "posted"}))
+    for m in re.finditer(r"(\d+)(\+)?\s*(minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago", t, re.I):
+        n, plus, unit = int(m.group(1)), m.group(2), m.group(3).lower()
+        if unit.startswith(("minute", "min")):
+            lo, hi = 0, 0
+        elif unit.startswith(("hour", "hr")):
+            lo, hi = (0, 1) if n >= 12 else (0, 0)
+        elif unit.startswith("day"):
+            lo, hi = n, n
+        elif unit.startswith(("week", "wk")):
+            lo, hi = n * 7, n * 7 + 6
+        elif unit.startswith(("month", "mo")):
+            lo, hi = n * 28, n * 30 + 29
+        else:
+            lo, hi = n * 365, None
+        if plus:
+            hi = None
+        found.append((m.start(), {"min": lo, "max": hi, "text": m.group(0), "kind": kind_at(m.start())}))
+    for m in re.finditer(r"\b(just now|just posted|posted today|today|new today)\b", t, re.I):
+        found.append((m.start(), {"min": 0, "max": 0, "text": m.group(0), "kind": kind_at(m.start())}))
+    for m in re.finditer(r"\byesterday\b", t, re.I):
+        found.append((m.start(), {"min": 1, "max": 1, "text": m.group(0), "kind": kind_at(m.start())}))
+    for m in re.finditer(r"\b(" + POSTED_LABELS + r")[:\s]*(?:on\s+)?" + DATE_RX, t, re.I):
+        d = parse_date(m.group(2))
+        if d:
+            age = (today - d.date()).days
+            found.append((m.start(), {"min": age, "max": age, "text": m.group(0).strip(), "kind": kind_at(m.start(), m.group(1))}))
+    if assume_posted and not found:                      # a bare date given as "the posting date"
+        d = parse_loose_date(t, today)
+        if d:
+            found.append((0, {"min": (today - d).days, "max": (today - d).days, "text": t.strip(), "kind": "posted"}))
+    if not found:
+        return None
+    found.sort(key=lambda x: x[0])
+    posted = [f for _, f in found if f["kind"] == "posted"]
+    if posted:
+        return posted[0]
+    return min((f for _, f in found), key=lambda f: f["min"])   # newest 'updated' date = tightest bound
+
+
+def window_verdict(est, window, today: dt.date) -> str:
+    """'in' (posting date proven inside the window), 'out' (proven outside) or 'unclear'."""
+    if not window:
+        return "in"
+    if not est:
+        return "unclear"
+    start, end = dt.date.fromisoformat(window["start"]), dt.date.fromisoformat(window["end"])
+    newest = today - dt.timedelta(days=est["min"])
+    oldest = None if est["max"] is None else today - dt.timedelta(days=est["max"])
+    if est["kind"] == "updated":                    # original posting is on/before this date
+        return "out" if newest < start else "unclear"
+    if newest < start or (oldest and oldest > end):
+        return "out"
+    if oldest is not None and oldest >= start and newest <= end:
+        return "in"
+    return "unclear"
+
+
+def posted_label(est, today: dt.date) -> str:
+    """'2026-11-12' or '2026-11-01 to 2026-11-07' (estimated from '1 week ago')."""
+    if not est or est["kind"] != "posted":
+        return ""
+    newest = today - dt.timedelta(days=est["min"])
+    if est["max"] is None:
+        return f"on/before {newest.isoformat()}"
+    oldest = today - dt.timedelta(days=est["max"])
+    return newest.isoformat() if oldest == newest else f"{oldest.isoformat()} to {newest.isoformat()}"
+
+
+def parse_age(text: str):
+    """(days, text) for the newest date found. Kept for older callers/tests."""
+    est = estimate_posting(text)
+    return (est["min"], est["text"]) if est else None
 
 
 def closing_passed(text: str) -> bool:
     """True if the text shows a closing/expiry date that is already in the past."""
-    m = re.search(r"\b(?:closes|closing date|closing|expires|expiry date|apply by|deadline)[:\s]*(?:on\s+)?" + DATE_RX,
+    m = re.search(r"\b(?:closes|closing date|closing|expires|expiry date|apply by|apply before|deadline|"
+                  r"accepted until|applications close[sd]?|open until)[:\s]*(?:on\s+)?" + DATE_RX,
                   str(text or ""), re.I)
     d = parse_date(m.group(1)) if m else None
     return bool(d and d.date() < dt.date.today())
@@ -442,7 +632,7 @@ def emails_in(text: str) -> list[str]:
 def email_type(email: str) -> str:
     local = email.split("@")[0].lower()
     parts = [x for x in re.split(r"[-._+0-9]+", local) if x]
-    return "Generic" if local in GENERIC_LOCAL or any(x in GENERIC_LOCAL for x in parts) else "Person"
+    return "Generic" if local in GENERIC_LOCAL or any(x in GENERIC_LOCAL for x in parts) else "Named"
 
 
 def apply_via(c: dict) -> str:
@@ -464,12 +654,17 @@ def add_email(c: dict, email: str, source: str, name="", role="", from_posting=F
         return "not a valid email"
     if NOREPLY.match(email):
         return "no-reply address"
+    if email.split("@")[1] in PLACEHOLDER_DOMAINS:
+        return "placeholder/sample address"
     if email.split("@")[1] in FREEMAIL and not from_posting:
         return "personal mailbox (only accepted when the job posting itself lists it)"
     if any(e["email"] == email for e in c.setdefault("emails", [])):
         return "already recorded"
-    c["emails"].append({"email": email, "name": str(name or "").strip(), "role": str(role or "").strip(),
-                        "type": email_type(email), "source": source})
+    typ = email_type(email)
+    nm = str(name or "").strip()
+    c["emails"].append({"email": email, "name": nm, "role": str(role or "").strip(),
+                        "type": typ if (typ == "Generic" or nm) else "Named (identity unconfirmed)",
+                        "source": source, "verification": email_verification(c, email, source, from_posting)})
     return ""
 
 
@@ -477,10 +672,33 @@ def best_email(c: dict) -> str:
     em = c.get("emails") or []
     if not em:
         return ""
-    rank = lambda e: (0 if e["type"] == "Person" and re.search(r"recruit|talent|hr|people|hiring", e["role"] or "", re.I)
+    em = [e for e in em if e.get("email") and is_sendable(e)] or [e for e in em if e.get("email")]
+    if not em:
+        return ""
+    rank = lambda e: (0 if e["type"].startswith("Named") and re.search(r"recruit|talent|hr|people|hiring", e["role"] or "", re.I)
                       else 1 if e["type"] == "Generic" and re.match(r"(careers?|jobs?|hr|recruit|talent|hiring|people|apply)", e["email"])
-                      else 2 if e["type"] == "Person" else 3)
+                      else 2 if e["type"].startswith("Named") else 3)
     return sorted(em, key=rank)[0]["email"]
+
+
+def email_verification(c: dict, email: str, source: str, from_posting: bool) -> str:
+    """Where the address was published decides how far it can be trusted (and whether it may be emailed)."""
+    edom = email.split("@")[-1].lower()
+    sdom = domain_of(source)
+    site = (c.get("website") or "").lower()
+    if from_posting:
+        return "Verified: in the job post"
+    if sdom and (sdom == edom or sdom.endswith("." + edom) or edom.endswith("." + sdom)):
+        return "Verified: company website"
+    if site and (sdom == site or sdom.endswith("." + site)):      # published on the company's own site
+        return "Verified: company website"
+    if sdom in ATS:                     # the company's own ATS page (Greenhouse, Lever, ...) for this job
+        return "Verified: company ATS page"
+    return "Unverified: third-party page"
+
+
+def is_sendable(e: dict) -> bool:
+    return str(e.get("verification", "Verified")).startswith("Verified") and bool(e.get("email"))
 
 
 def is_anywhere(s: str) -> bool:
@@ -521,7 +739,9 @@ def read_existing(path: str) -> dict:
     import openpyxl
     wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
     res.update({"contacts": [], "applications": []})
-    for sheet, key in (("Leads", "leads"), ("Run Log", "runlog"), ("Contacts", "contacts"), ("Applications", "applications")):
+    res["excluded"] = []
+    for sheet, key in (("Leads", "leads"), ("Run Log", "runlog"), ("Contacts", "contacts"), ("Applications", "applications"),
+                       ("Excluded", "excluded")):
         ws = wb[sheet] if sheet in wb.sheetnames else (wb.worksheets[0] if key == "leads" else None)
         if ws is None:
             continue
@@ -529,6 +749,9 @@ def read_existing(path: str) -> dict:
         if not rows:
             continue
         hdr = [str(h or "").strip() for h in rows[0]]
+        if key == "applications":
+            hdr = ["Next Action" if h == "Next Step" else h for h in hdr]
+        hdr = [h if h in hdr and OLD_NAMES.get(h) in hdr else OLD_NAMES.get(h, h) for h in hdr]
         for r in rows[1:]:
             if any(v not in (None, "") for v in r):
                 res[key].append({h: ("" if v is None else v) for h, v in zip(hdr, r)})
@@ -546,8 +769,9 @@ def known_urls(st) -> set:
 def known_keys(st) -> set:
     keys = set(st["known_keys"])
     keys.update(c["key"] for c in st["candidates"]
-                if c.get("key") and c.get("status") in ("saved", "surplus", "ready") + IN_FLIGHT)
-    return keys
+                if c.get("key") and (c.get("status") in ("saved", "surplus", "ready") + IN_FLIGHT
+                                     or (c.get("status") == "rejected" and c.get("outcome") in ("low_fit", "closed"))))
+    return keys   # a job already judged low-fit or closed isn't re-reviewed when another board copies it
 
 
 def source_cap(st) -> int:
@@ -560,6 +784,21 @@ def source_load(st, src) -> int:
 
 
 # ============================================================================ outcomes
+
+
+REJECT_REASONS = {"low_fit": "Low fit for the CV / offer", "duplicate": "Duplicate of a job already found",
+                  "closed": "Closed, expired or filled", "wrong_location": "Outside the chosen locations",
+                  "agency": "Recruitment agency / employer hidden", "not_job": "Not a job posting",
+                  "outside_window": "Posted outside the chosen window", "no_date": "No verifiable posting date",
+                  "paywalled": "Paywalled listing", "listing": "Search/listing page"}
+
+
+def exclude(st, title, url, outcome, note=""):
+    """Results dropped before they became candidates, kept for the Excluded sheet (capped)."""
+    st["counts"][outcome] = st["counts"].get(outcome, 0) + 1
+    ex = st.setdefault("excluded", [])
+    if len(ex) < 400:
+        ex.append({"title": title[:160], "url": url, "outcome": outcome, "note": note[:200]})
 
 
 def miss(st, c, outcome, note=""):
@@ -587,6 +826,8 @@ def route(st, c):
         return
     if c.get("open_check") is None:
         c["open_check"] = "Snippet only" if cfg["verify_open"] else "Not checked"
+    if not date_gate(st, c):
+        return
     if cfg["mode"] == "clients" and cfg["agencies"] == "skip" and not str(c.get("company") or "").strip():
         miss(st, c, "agency", "employer not named")      # a client lead needs a named company
         return
@@ -594,6 +835,38 @@ def route(st, c):
         c["status"] = "needs_contact"
         return
     save_lead(st, c)
+
+
+def date_gate(st, c) -> bool:
+    """Strict posting window: True if the job may be saved. Undated jobs are dropped, or parked in a
+    separate 'undated' list when the user allowed that. Never relaxed to reach the target."""
+    cfg = st["config"]
+    if not cfg.get("window"):
+        return True
+    v = c.get("date_verdict") or "unclear"
+    if v == "in":
+        return True
+    if v == "out":
+        miss(st, c, "outside_window", c.get("posted") or "")
+        return False
+    if cfg.get("undated") == "separate":
+        c["status"] = "undated"
+        c["saved_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        return False
+    miss(st, c, "no_date", "no original posting date on the listing" + (f" (only: {c['posted']})" if c.get("posted") else ""))
+    return False
+
+
+def set_date(st, c, est, source):
+    """Record the posting-date evidence on a candidate."""
+    today = today_of(st)
+    c["date_est"] = est
+    c["date_verdict"] = window_verdict(est, st["config"].get("window"), today)
+    c["posted"] = est["text"] if est else ""
+    c["posted_date"] = posted_label(est, today)
+    c["date_source"] = source if est else ""
+    if est and est["kind"] == "updated":
+        c["date_source"] = f"{source} (updated/reposted date only)"
 
 
 def save_lead(st, c):
@@ -643,13 +916,18 @@ def cmd_init(args):
     if bad:
         fail(f"Unknown platform(s) {bad}. Choose from: {', '.join(PLATFORMS)} (or leave empty for any).")
     now = dt.datetime.now()
+    today = now.date()
+    if args.posted_within and args.posted and args.posted != args.posted_within:
+        fail("Give the posting window once: --posted-within (e.g. 7d, 'last 10 days', 2026-11-01..2026-11-10).")
+    window = parse_window(args.posted_within or args.posted or "7d", today)
     st = {
-        "version": 2,
+        "version": 3,
         "run_id": "jw-" + now.strftime("%Y%m%d-%H%M%S"),
         "started_at": now.isoformat(timespec="seconds"),
         "config": {
             "mode": args.mode, "roles": roles, "locations": locations, "offer": args.offer or "",
-            "ranking": args.ranking, "min_score": int(args.min_score), "posted": args.posted,
+            "ranking": args.ranking, "min_score": int(args.min_score), "posted": window["label"] if window else "Any time",
+            "window": window, "run_date": today.isoformat(), "undated": args.undated,
             "verify_open": args.verify_open == "yes", "find_contacts": args.find_contacts == "yes",
             "strict_location": args.location_filter == "strict", "agencies": agencies,
             "platforms": platforms, "platforms_only": bool(args.platforms_only and platforms),
@@ -659,7 +937,7 @@ def cmd_init(args):
         },
         "saved": 0, "saved_by_source": {}, "searches": 0, "query_index": 0, "consecutive_misses": 0,
         "counts": {}, "candidates": [], "pending_search": None, "status": "running", "notes": [],
-        "known_urls": [], "known_keys": [], "existing": {"leads": [], "runlog": [], "contacts": [], "applications": []},
+        "known_urls": [], "known_keys": [], "existing": {"leads": [], "runlog": [], "contacts": [], "applications": [], "excluded": []},
     }
     if args.existing:
         ex = read_existing(args.existing)
@@ -673,6 +951,24 @@ def cmd_init(args):
                 k = r.get("Dedupe Key") or dedupe_key(args.mode, r.get("Company", ""), r.get("Job Title", ""))
                 if k:
                     st["known_keys"].append(k)
+        prior = {}
+        for r in ex.get("contacts", []):            # never email the same address again just because of a re-run
+            stt = str(r.get("Outreach Status") or "")
+            if r.get("Email") and stt in ("Sent", "Draft created"):
+                prior[str(r["Email"]).lower()] = f"{stt} in run {r.get('Run ID', '?')}"
+        for r in ex.get("applications", []):
+            g = str(r.get("Gmail Status") or "")
+            if r.get("Outreach To") and (g.startswith("Sent") or g.startswith("Draft")):
+                prior.setdefault(str(r["Outreach To"]).lower(), f"{g} in run {r.get('Run ID', '?')}")
+        st["prior_outreach"] = prior
+        if args.recheck_previous:
+            n = 0
+            for i, r in enumerate(ex["leads"]):
+                ver = str(r.get("Verification") or "")
+                if r.get("Job URL") and not ver.startswith("Closed") and str(r.get("Application Status") or "") not in ("Applied", "Skipped"):
+                    n += 1
+                    st.setdefault("rechecks", []).append({"id": f"r{n}", "row": i, "url": r["Job URL"], "company": r.get("Company", ""),
+                                                           "role": r.get("Job Title", ""), "result": None})
     save(args, st)
     out({"ok": True, "run_id": st["run_id"], "config": st["config"],
          "existing_leads_loaded": len(st["existing"]["leads"]),
@@ -684,11 +980,14 @@ def build_query(st) -> dict:
     i = st["query_index"]
     combos = [(r, l) for r in cfg["roles"] for l in cfg["locations"]]
     role, loc = combos[i % len(combos)]
-    style = QUERY_STYLES[(i // len(combos)) % len(QUERY_STYLES)]
+    styles = REMOTE_QUERY_STYLES if is_remote(loc) else QUERY_STYLES
+    style = styles[(i // len(combos)) % len(styles)]
     now = dt.datetime.now()
     loc_txt = "" if is_anywhere(loc) else ("remote" if is_remote(loc) else loc)
     if st["consecutive_misses"] >= 15:          # stuck: plainest wording
-        style = "{role} job {loc} {year}"
+        style = ('"{role}" fully remote hiring careers page {year}' if is_remote(loc)
+                 else '"{role}" hiring {loc} careers {year}')     # plain wording; live tests showed bare
+                                                                 # "<role> job remote" returns paywalled aggregators
     query = style.format(role=role, loc=loc_txt, month=now.strftime("%B %Y"), year=now.year)
     plats = cfg.get("platforms") or []
     if plats and (i % 2 == 1 or cfg.get("platforms_only")):      # steer every other search toward a chosen platform
@@ -725,14 +1024,26 @@ def cmd_next(args):
         return done("target_reached", "Target number of leads saved.")
 
     # 1) follow-ups (page checks / contact lookups) on qualified leads
+    max_tasks = max(1, int(getattr(args, "max_tasks", 5) or 5))
     follow = [c for c in st["candidates"] if c["status"] in IN_FLIGHT]
+    pending_rc = [r for r in st.get("rechecks", []) if r["result"] is None]
+    if not follow and pending_rc:
+        save(args, st)
+        return out({"action": "verify", "tasks": [{"id": r["id"], "type": "recheck", "url": r["url"], "company": r["company"],
+                                                   "role": r["role"], "how": "web_fetch the URL. Reply {id, open: true|false|null}."}
+                                                  for r in pending_rc[:max_tasks]],
+                    "next": "These are jobs from the earlier tracker. Reply, then run `jword.py apply --updates <file>`."})
     if follow:
         tasks = []
-        for c in follow[:5]:
+        for c in follow[:max_tasks]:
             if c["status"] == "needs_open_check":
                 tasks.append({"id": c["id"], "type": "open_check", "url": c["url"], "company": c.get("company"),
                               "role": c.get("role"),
-                              "how": "web_fetch the URL. Reply {id, open: true|false|null, posted: '<age/date if shown>'"
+                              "window": cfg["posted"],
+                              "how": "web_fetch the URL. Reply {id, open: true|false|null, posted: '<ORIGINAL posting date as the page "
+                                     "labels it, e.g. \"Posted 3 days ago\" or \"Date posted: 2026-11-10\"; empty if not shown>', "
+                                     "updated: '<only an updated/reposted/reviewed date, if that is all the page shows>', "
+                                     "posted_source: '<where on the page: header, JSON-LD datePosted, ...>'"
                                      + (", company: '<employer if the page names it>', fit_reason, angle (rewrite them now that "
                                         "the employer is known)" if not c.get("company") else "")
                                      + "}; if unsure add page_text with the first ~3000 characters."})
@@ -761,14 +1072,15 @@ def cmd_next(args):
             if per_src.get(c["source"], 0) < 2:
                 batch.append(c)
                 per_src[c["source"]] = per_src.get(c["source"], 0) + 1
-            if len(batch) >= REVIEW_BATCH:
+            if len(batch) >= max(1, int(getattr(args, "batch", REVIEW_BATCH) or REVIEW_BATCH)):
                 break
         save(args, st)
         return out({
             "action": "review",
             "instructions": "Score each candidate with references/scoring-rubric.md. Reply with a JSON list of "
-                            "{id, is_job_posting, is_open, is_agency, company, role, location, fit_score (1-5), "
-                            "fit_reason, angle} then run `jword.py apply --updates <file>`.",
+                            "{id, is_job_posting, is_open, is_agency, company, role, location, employment_type, fit_score (1-5), "
+                            "fit_reason, skills_matched, gaps, angle} then run `jword.py apply --updates <file>`.",
+            "window": cfg["posted"],
             "mode": cfg["mode"], "offer": cfg["offer"], "roles": cfg["roles"], "locations": cfg["locations"],
             "candidates": [{"id": c["id"], "source": c["source"], "url": c["url"], "title": c["title"],
                             "snippet": c["snippet"], "posted": c.get("posted", "")} for c in batch],
@@ -792,23 +1104,44 @@ def cmd_next(args):
 def cmd_ingest(args):
     st = load(args)
     cfg = st["config"]
-    if not st.get("pending_search"):
-        fail("No search is pending. Run `jword.py next` first.")
     try:
         results = json.loads(Path(args.results).read_text())
     except Exception as e:  # noqa: BLE001
         fail(f"Could not read results JSON: {e}")
-    if isinstance(results, dict):
-        results = results.get("results") or results.get("web") or results.get("data") or []
+    issued = st.setdefault("issued", {})
+    if isinstance(results, dict) and results and all(k in issued for k in results):   # parallel packet
+        batches = list(results.items())
+    else:
+        if not st.get("pending_search"):
+            fail("No search is pending. Run `jword.py next` first (or ingest a {query_id: [...]} packet from `shards`).")
+        if isinstance(results, dict):
+            results = results.get("results") or results.get("web") or results.get("data") or []
+        batches = [(None, results)]
+    total = {}
+    for qid, res in batches:
+        if qid:
+            issued.pop(qid, None)
+            st["searches"] += 1
+        else:
+            st["searches"] += 1
+            st["query_index"] += 1
+            st["pending_search"] = None
+        stats = ingest_batch(st, res if isinstance(res, list) else [])
+        for k, v in stats.items():
+            total[k] = total.get(k, 0) + v
+    save(args, st)
+    out({"ok": True, "stats": total, "searches": len(batches), "saved": st["saved"], "target": cfg["target"],
+         "next": "Run `jword.py next`."})
 
-    st["searches"] += 1
-    st["query_index"] += 1
-    st["pending_search"] = None
+
+def ingest_batch(st, results) -> dict:
+    cfg = st["config"]
     matcher = LocationMatcher(cfg["locations"])
-    max_age = MAX_AGE_DAYS[cfg["posted"]]
+    today = today_of(st)
     seen, keys = known_urls(st), known_keys(st)
     stats = {k: 0 for k in ("results", "new", "listing_or_irrelevant", "already_seen", "closed_or_stale",
-                            "duplicate", "wrong_location", "agency", "low_fit", "queued_for_review", "qualified")}
+                            "duplicate", "wrong_location", "agency", "low_fit", "queued_for_review", "qualified",
+                            "outside_window", "paywalled")}
     stats["results"] = len(results)
     role_words = {w for r in cfg["roles"] for w in (words(r) or [r.lower()])}
 
@@ -821,21 +1154,30 @@ def cmd_ingest(args):
                 or is_listing(title, url) or not any(w in text.lower() for w in role_words)):
             stats["listing_or_irrelevant"] += 1
             continue
+        if domain_of(url) in PAYWALL_DOMAINS or PAYWALL_HINTS.search(text):
+            stats["paywalled"] += 1                               # can't apply without paying
+            exclude(st, title, url, "paywalled")
+            continue
         nurl = normalize_job_url(url)
         if nurl in seen:
             stats["already_seen"] += 1
             continue
         seen.add(nurl)
-        age = parse_age(snippet) or parse_age(title)
-        if CLOSED_RE.search(text) or closing_passed(snippet) or (age and max_age and age[0] > max_age):
+        est = estimate_posting(snippet, today) or estimate_posting(title, today)
+        if CLOSED_RE.search(text) or closing_passed(snippet):
             stats["closed_or_stale"] += 1
-            st["counts"]["closed"] = st["counts"].get("closed", 0) + 1
+            exclude(st, title, url, "closed")
+            continue
+        if window_verdict(est, cfg.get("window"), today) == "out":
+            stats["outside_window"] += 1
+            exclude(st, title, url, "outside_window", est["text"])
             continue
 
         p = parse_title(title, url)
         c = {"id": f"c{len(st['candidates']) + 1}", "source": source_of(nurl), "url": display_url(url), "nurl": nurl, "title": title,
              "snippet": snippet[:700], "company": p["company"], "role": p["role"], "location": p["location"],
-             "posted": age[1] if age else "", "status": "new", "open_check": None, "contact": None}
+             "posted": "", "status": "new", "open_check": None, "contact": None}
+        set_date(st, c, est, "search snippet")
         c["key"] = dedupe_key(cfg["mode"], c["company"], c["role"])
         if cfg.get("platforms_only") and not on_platform(cfg, c):
             stats["listing_or_irrelevant"] += 1        # not on a platform the user asked for
@@ -879,8 +1221,7 @@ def cmd_ingest(args):
 
     if stats["new"] == 0:
         st["consecutive_misses"] += 1
-    save(args, st)
-    out({"ok": True, "stats": stats, "saved": st["saved"], "target": cfg["target"], "next": "Run `jword.py next`."})
+    return stats
 
 
 def cmd_apply(args):
@@ -894,22 +1235,33 @@ def cmd_apply(args):
         updates = updates.get("updates") or [updates]
     matcher = LocationMatcher(cfg["locations"])
     keys = known_keys(st)
-    max_age = MAX_AGE_DAYS[cfg["posted"]]
+    today = today_of(st)
     results, errors = [], []
 
     for u in updates:
+        rc = next((r for r in st.get("rechecks", []) if r["id"] == str(u.get("id", ""))), None)
+        if rc:
+            rc["result"] = {True: "open", False: "closed"}.get(u.get("open"), "unknown")
+            rc["checked"] = today.isoformat()
+            results.append({"id": rc["id"], "recheck": rc["result"]})
+            continue
         c = cand(st, str(u.get("id", "")))
         if not c:
             errors.append(f"unknown id {u.get('id')}")
             continue
-        if "fit_score" in u or "is_job_posting" in u:                     # --- verdict
+        is_page_check = "open" in u or "page_text" in u
+        if ("fit_score" in u or "is_job_posting" in u) and not is_page_check:   # --- verdict
             if c["status"] != "queued":
                 errors.append(f"{c['id']}: not waiting for a verdict (status {c['status']})")
                 continue
-            for f in ("company", "role", "location"):
+            for f in ("company", "role", "location", "employment_type"):
                 v = str(u.get(f) or "").strip()
                 if v:
                     c[f] = v
+            for f in ("skills_matched", "gaps"):
+                v = u.get(f)
+                if v:
+                    c[f] = ", ".join(map(str, v)) if isinstance(v, list) else str(v)
             c["key"] = dedupe_key(cfg["mode"], c["company"], c["role"]) or c.get("key", "")
             status, loc = matcher.match(c.get("location", ""))
             if status == "match":
@@ -932,7 +1284,7 @@ def cmd_apply(args):
                 qualify_or_reject(st, c, score, str(u.get("fit_reason") or "").strip(), str(u.get("angle") or "").strip())
                 if c["status"] != "rejected" and c["key"]:
                     keys.add(c["key"])
-        elif "open" in u or "page_text" in u:                              # --- page check
+        elif is_page_check:                                                # --- page check
             if c["status"] != "needs_open_check":
                 errors.append(f"{c['id']}: no page check pending")
                 continue
@@ -940,15 +1292,30 @@ def cmd_apply(args):
             is_open = u.get("open")
             text = str(u.get("page_text") or "")[:4000]
             posted = str(u.get("posted") or "").strip()
-            age = parse_age(posted) or parse_age(text)
-            if not age and (d := parse_date(posted)):
-                age = (max(0, (dt.datetime.now() - d).days), posted)
+            updated = str(u.get("updated") or "").strip()
+            est = (estimate_posting(posted, today, assume_posted=True) if posted else None) \
+                or estimate_posting(text, today) \
+                or (estimate_posting("updated " + updated, today) if updated else None)
+            if est or not c.get("date_est"):          # the job page beats the search snippet
+                src = "job page" + (f" ({u['posted_source']})" if u.get("posted_source") else "")
+                set_date(st, c, est, src)
             if text and (CLOSED_RE.search(text) or closing_passed(text)):
                 is_open = False
+            rescore = None
+            if u.get("fit_score") is not None:                 # the full page can lower (or raise) the fit
+                try:
+                    rescore = max(1, min(5, int(round(float(u["fit_score"])))))
+                except (TypeError, ValueError):
+                    rescore = None
             if is_open is False:
                 miss(st, c, "closed", "page check")
-            elif age and max_age and age[0] > max_age:
-                miss(st, c, "closed", f"stale ({age[1]})")
+            elif rescore is not None and rescore < cfg.get("min_score", 3):
+                c["fit_score"] = rescore
+                if u.get("fit_reason"):
+                    c["fit_reason"] = str(u["fit_reason"]).strip()
+                miss(st, c, "low_fit", "page check")
+            elif c.get("date_verdict") == "out":
+                miss(st, c, "outside_window", c.get("posted") or "")
             else:
                 for f in ("company", "role", "location"):          # the page often names the employer
                     v = str(u.get(f) or "").strip()
@@ -960,9 +1327,9 @@ def cmd_apply(args):
                     v = str(u.get(f) or "").strip()
                     if v:
                         c[k] = v
+                if rescore is not None:
+                    c["fit_score"] = rescore
                 c["open_check"] = "Open (page checked)" if is_open else "Unverified (page check failed)"
-                if not c.get("posted") and (age or posted):
-                    c["posted"] = age[1] if age else posted
                 route(st, c)
         elif "contact" in u:                                               # --- decision-maker
             if c["status"] != "needs_contact":
@@ -1003,6 +1370,20 @@ def lead_status(st, c) -> tuple[str, str]:
     return "New", ""
 
 
+def outreach_status(c) -> tuple[str, str]:
+    """(Outreach Status, Gmail Status) for a lead: the furthest any of its emails got."""
+    os_ = c.get("outreach") or []
+    if not os_:
+        return "", ""
+    order = ["failed", "prepared", "draft", "sent"]
+    best = max(os_, key=lambda o: order.index(o["status"]) if o["status"] in order else -1)
+    g = {"sent": f"Sent {str(best.get('send_at', ''))[:10]}".strip(), "draft": "Draft in Gmail",
+         "failed": f"Failed: {best.get('error', '')}"[:120], "prepared": "Not in Gmail yet"}.get(best["status"], "")
+    n = len(os_)
+    label = OUTREACH_STATUSES.get(best["status"], best["status"]) + (f" ({n} emails)" if n > 1 else "")
+    return label, g
+
+
 def cmd_plan(args):
     st = load(args)
     cfg = st["config"]
@@ -1012,9 +1393,15 @@ def cmd_plan(args):
         d = domain_of(c["url"])
         site = c.get("website") or (d if d not in ATS and d not in NO_AUTOMATION and c["source"] == d else "")
         leads.append({"id": c["id"], "company": c.get("company"), "role": c.get("role"), "url": c["url"],
-                      "apply_via": apply_via(c), "website": site, "emails": [e["email"] for e in c.get("emails", [])],
+                      "posted": c.get("posted_date") or c.get("posted", ""),
+                      "apply_via": apply_via(c), "website": site,
+                      "emails": [e["email"] for e in c.get("emails", []) if e.get("email") and is_sendable(e)],
+                      "unverified_emails": [e["email"] for e in c.get("emails", []) if e.get("email") and not is_sendable(e)],
                       "contacts_checked": bool(c.get("contacts_checked")), "status": status, "next_step": nxt})
-    out({"mode": cfg["mode"], "leads": leads,
+    undated = [{"id": c["id"], "company": c.get("company"), "role": c.get("role"), "url": c["url"]}
+               for c in st["candidates"] if c["status"] == "undated"]
+    out({"mode": cfg["mode"], "window": cfg["posted"], "leads": leads, "undated_separate": undated,
+         "policy": cfg.get("policy", {}),
          "todo": {"contacts": [l["id"] for l in leads if not l["contacts_checked"]],
                   "to_apply": [l["id"] for l in leads if cfg["mode"] == "jobs" and l["status"] in ("To apply", "Prepared")],
                   "to_email": [l["id"] for l in leads if l["emails"] and l["status"] in ("New", "To apply", "Prepared")]},
@@ -1040,6 +1427,19 @@ def cmd_contacts(args):
             continue
         if u.get("website"):
             c["website"] = domain_of(str(u["website"])) or str(u["website"])
+            for e in c.get("emails", []):                  # re-judge earlier addresses now the site is known
+                if not e["verification"].startswith("Verified: in the job post"):
+                    e["verification"] = email_verification(c, e["email"], e["source"], False)
+        for ppl in u.get("people") or []:                  # named recruiters/HR/founders with no public email
+            nm, src, ev = str(ppl.get("name") or "").strip(), str(ppl.get("source_url") or "").strip(), str(ppl.get("evidence") or "")
+            if not nm or not src.startswith("http") or nm.split()[0].lower() not in ev.lower():
+                refused.append({"id": c["id"], "person": nm, "why": "people need name, source_url and evidence quoting the name"})
+                continue
+            if any(x.get("name", "").lower() == nm.lower() and not x.get("email") for x in c.setdefault("emails", [])):
+                continue
+            c["emails"].append({"email": "", "name": nm, "role": str(ppl.get("role") or "").strip(), "type": "Named",
+                                "source": src, "verification": "No public email (named contact only)"})
+            added.append({"id": c["id"], "person": nm})
         for e in u.get("emails") or []:
             email = str(e.get("email") or "").strip().lower()
             src = str(e.get("source_url") or "").strip()
@@ -1092,6 +1492,227 @@ def cmd_track(args):
     out({"ok": not errors, "updated": done_, "errors": errors})
 
 
+
+# ============================================================================ outreach + Gmail
+
+
+def norm_body(txt: str, *drop) -> str:
+    t = str(txt or "").lower()
+    for d in drop:
+        if d:
+            t = t.replace(str(d).lower(), " ")
+    t = re.sub(r"^\s*(hi|hello|dear|hey)[^\n]*\n", "", t)          # greeting line
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def all_outreach(st):
+    for c in st["candidates"]:
+        for o in c.get("outreach", []):
+            yield c, o
+
+
+def cmd_settings(args):
+    """Store the user's choices (asked in SKILL.md step 3). External actions are checked against them."""
+    st = load(args)
+    pol = st["config"].setdefault("policy", {})
+    if args.email_mode:
+        pol["email_mode"] = args.email_mode
+    if args.submit_mode:
+        pol["submit_mode"] = args.submit_mode
+    if args.contact_research:
+        pol["contact_research"] = args.contact_research
+    save(args, st)
+    out({"ok": True, "policy": pol, "email_mode": EMAIL_MODES.get(pol.get("email_mode"), "not set"),
+         "note": "B2B (clients mode) emails are never sent automatically: 'auto' acts as 'approve_each' there."})
+
+
+def cmd_outreach(args):
+    """Record individual emails written for verified contacts. Refuses guessed or unverified recipients,
+    unfilled placeholders, copy-paste emails across companies and repeat outreach."""
+    st = load(args)
+    cfg = st["config"]
+    pol = cfg.get("policy", {})
+    if pol.get("email_mode") == "contacts_only":
+        fail("Email mode is 'contacts_only': the user asked for contacts only, so no emails are prepared.")
+    try:
+        updates = json.loads(Path(args.updates).read_text())
+    except Exception as e:  # noqa: BLE001
+        fail(f"Could not read outreach JSON: {e}")
+    if isinstance(updates, dict):
+        updates = [updates]
+    purpose = "application" if cfg["mode"] == "jobs" else "b2b"
+    prior = {k.lower(): v for k, v in st.get("prior_outreach", {}).items()}
+    accepted, refused = [], []
+    for u in updates:
+        c = cand(st, str(u.get("id", "")))
+        to = str(u.get("to") or "").strip().lower()
+        subj, body = str(u.get("subject") or "").strip(), str(u.get("body") or "").strip()
+        why = ""
+        e = next((x for x in (c or {}).get("emails", []) if x.get("email") == to), None)
+        if not c or c["status"] != "saved":
+            why = "unknown or unsaved lead"
+        elif not e:
+            why = "recipient is not a recorded contact for this lead (record it with `contacts` first; never guess)"
+        elif not is_sendable(e):
+            why = f"recipient not verified ({e['verification']})"
+        elif not subj or len(body.split()) < 40:
+            why = "needs a subject and a real body (40+ words)"
+        elif len(body.split()) > 260:
+            why = "too long: keep it under ~220 words"
+        elif PLACEHOLDER_RE.search(subj + "\n" + body):
+            why = "unfilled placeholder in the text: " + PLACEHOLDER_RE.search(subj + "\n" + body).group(0)
+        elif purpose == "b2b" and not OPT_OUT_RE.search(body):
+            why = "B2B outreach needs a short opt-out line (e.g. 'If this isn't relevant, just say so and I won't follow up.')"
+        elif (to in prior or any(o["to"] == to and o["status"] in ("prepared", "draft", "sent") for _, o in all_outreach(st))) \
+                and not u.get("override_duplicate"):
+            why = (f"already contacted ({prior.get(to, 'this run')}); don't email again unless the user explicitly says so "
+                   "(then add override_duplicate: true)")
+        else:
+            nb = norm_body(body, c.get("company"), e.get("name"))
+            for c2, o2 in all_outreach(st):
+                if c2["id"] == c["id"] and o2["to"] == to:
+                    continue
+                if o2["subject"].strip().lower() == subj.lower() and (c2.get("company") or "") != (c.get("company") or ""):
+                    why = f"same subject as the email to {c2.get('company')}: write a subject for this job"
+                    break
+                ratio = difflib.SequenceMatcher(None, nb, norm_body(o2["body"], c2.get("company"), o2.get("name"))).ratio()
+                if ratio > 0.82:
+                    why = f"{int(ratio * 100)}% identical to the email for {c2.get('company')}: personalise it for this company and job"
+                    break
+        if why:
+            refused.append({"id": u.get("id"), "to": to, "why": why})
+            continue
+        oid = f"o{sum(1 for _ in all_outreach(st)) + 1}"
+        c.setdefault("outreach", []).append({
+            "oid": oid, "to": to, "name": e.get("name", ""), "recipient_type": e["type"], "subject": subj, "body": body,
+            "purpose": purpose, "status": "prepared", "gmail_id": "", "error": "",
+            "attach_cv": bool(u.get("attach_cv")), "prepared_at": dt.datetime.now().isoformat(timespec="seconds")})
+        accepted.append({"oid": oid, "id": c["id"], "company": c.get("company"), "to": to, "subject": subj})
+    save(args, st)
+    out({"ok": not refused, "accepted": accepted, "refused": refused,
+         "next": "Show the user recipients + subjects, then run `jword.py outbox` to see what the chosen mode allows."})
+
+
+def allowed_action(st, o) -> str:
+    mode = st["config"].get("policy", {}).get("email_mode", "drafts")
+    if mode in ("contacts_only", "chat"):
+        return "none"
+    if mode == "drafts":
+        return "draft"
+    if mode == "approve_each" or o["purpose"] == "b2b":
+        return "send_after_approval"
+    sent = sum(1 for _, x in all_outreach(st) if x["status"] == "sent")
+    return "send" if sent < AUTO_SEND_CAP else "send_after_approval"
+
+
+def cmd_outbox(args):
+    st = load(args)
+    items = []
+    for c, o in all_outreach(st):
+        if o["status"] in ("prepared", "failed", "draft"):
+            act = allowed_action(st, o)
+            if o["status"] == "draft" and act == "draft":
+                continue
+            items.append({"oid": o["oid"], "company": c.get("company"), "to": o["to"], "subject": o["subject"],
+                          "status": OUTREACH_STATUSES[o["status"]], "gmail_id": o.get("gmail_id", ""),
+                          "allowed": act, "attach_cv": o.get("attach_cv", False)})
+    mode = st["config"].get("policy", {}).get("email_mode", "drafts")
+    out({"email_mode": EMAIL_MODES.get(mode, mode), "items": items,
+         "how": "allowed=draft -> Gmail create_draft; send -> Gmail send_message (or send the draft by draftId); "
+                "send_after_approval -> show the email, wait for the user's yes, then send; none -> show in chat only. "
+                "After EVERY connector call run `jword.py gmail --updates <file>` with "
+                "{oid, action: draft|send, ok, id: '<id the connector returned>', error, approved_by_user}."})
+
+
+def cmd_gmail(args):
+    """Record Gmail connector results. A draft/send counts only with the id the connector returned."""
+    st = load(args)
+    try:
+        updates = json.loads(Path(args.updates).read_text())
+    except Exception as e:  # noqa: BLE001
+        fail(f"Could not read gmail JSON: {e}")
+    if isinstance(updates, dict):
+        updates = [updates]
+    done_, refused = [], []
+    for u in updates:
+        hit = next(((c, o) for c, o in all_outreach(st) if o["oid"] == str(u.get("oid", ""))), None)
+        if not hit:
+            refused.append({"oid": u.get("oid"), "why": "unknown outreach id"})
+            continue
+        c, o = hit
+        action = str(u.get("action") or "").lower()
+        allowed = allowed_action(st, o)
+        if action not in ("draft", "send"):
+            refused.append({"oid": o["oid"], "why": "action must be draft or send"})
+            continue
+        if o["status"] == "sent":
+            refused.append({"oid": o["oid"], "why": "already sent: never send twice"})
+            continue
+        if action == "send" and allowed in ("none", "draft"):
+            refused.append({"oid": o["oid"], "why": f"policy violation: sending is not allowed in '{st['config'].get('policy', {}).get('email_mode')}' mode"})
+            o["error"] = "send attempted outside the chosen mode"
+            continue
+        if action == "send" and allowed == "send_after_approval" and not u.get("approved_by_user"):
+            refused.append({"oid": o["oid"], "why": "this email needs the user's explicit approval before sending (approved_by_user: true)"})
+            continue
+        if action == "draft" and allowed == "none":
+            refused.append({"oid": o["oid"], "why": "mode is chat/contacts only: no Gmail drafts"})
+            continue
+        gid = str(u.get("id") or "").strip()
+        now_ = dt.datetime.now().isoformat(timespec="seconds")
+        if u.get("ok") and gid:
+            o["status"] = "sent" if action == "send" else "draft"
+            o["gmail_id"], o["error"], o[f"{action}_at"] = gid, "", now_
+        else:
+            o["status"] = "failed"
+            o["error"] = str(u.get("error") or "connector returned no id, so it is not counted as done")[:300]
+        st.setdefault("gmail_log", []).append({"oid": o["oid"], "action": action, "ok": o["status"] != "failed",
+                                               "id": gid, "error": o["error"], "at": now_})
+        done_.append({"oid": o["oid"], "company": c.get("company"), "status": OUTREACH_STATUSES[o["status"]]})
+    save(args, st)
+    out({"ok": not refused, "recorded": done_, "refused": refused})
+
+
+def cmd_log(args):
+    st = load(args)
+    if args.agents:
+        st.setdefault("agents_used", []).append(args.agents)
+    if args.note:
+        st["notes"].append(args.note)
+    if args.error:
+        st.setdefault("errors", []).append(args.error)
+    save(args, st)
+    out({"ok": True})
+
+
+def cmd_shards(args):
+    """Claude Code: split the next searches into independent work packets for parallel job-researcher
+    subagents. Every packet carries the same strict window and rules; results come back as
+    {query_id: [results]} files for `ingest`."""
+    st = load(args)
+    cfg = st["config"]
+    workers, per = max(1, min(int(args.workers), 5)), max(1, min(int(args.per_worker), 6))
+    left = max(0, cfg["max_searches"] - st["searches"] - len(st.get("issued", {})))
+    combos = [(r, l) for r in cfg["roles"] for l in cfg["locations"]]
+    groups = {}
+    for _ in range(min(left, workers * per)):
+        plan = build_query(st)
+        st["query_index"] += 1
+        qid = f"q{st['query_index']}"
+        st.setdefault("issued", {})[qid] = plan
+        g = plan["location"] if len(cfg["locations"]) >= workers or len(combos) < workers else plan["role"]
+        groups.setdefault(g, []).append({"query_id": qid, "query": plan["query"]})
+    packets = []
+    for n, (g, qs) in enumerate(groups.items(), 1):
+        packets.append({"shard": f"s{n}", "focus": g, "queries": qs, "window": cfg.get("window"),
+                        "window_label": cfg["posted"], "rules": "Run each query exactly. Return ALL results per query_id "
+                        "as {query_id: [{title,url,snippet}]}; keep any posted/updated dates in the snippet; never "
+                        "invent results; do not filter by date yourself (the engine applies the window)."})
+    save(args, st)
+    out({"packets": packets, "next": "Give each packet to one job-researcher. When all return, run "
+                                     "`jword.py ingest --results <file>` per packet, then `jword.py next`."})
+
+
 def cmd_profile_check(args):
     p = Path(args.profile)
     if not p.exists():
@@ -1115,18 +1736,27 @@ def cmd_profile_check(args):
 def cmd_report(args):
     """Markdown status list for the end of the chat."""
     st = load(args)
-    rows = []
+    cfg = st["config"]
+    rows, counts = [], {}
     for i, c in enumerate(saved_leads(st), 1):
         status, nxt = lead_status(st, c)
+        ostat, _ = outreach_status(c)
         email = best_email(c) or "-"
-        rows.append(f"| {i} | {c.get('company') or '?'} | [{c.get('role') or 'Job'}]({c['url']}) | {c.get('fit_score') or '-'} "
-                    f"| {apply_via(c)} | {email} | **{status}** | {nxt or '-'} |")
-    counts = {}
-    for c in saved_leads(st):
-        s_, _ = lead_status(st, c)
-        counts[s_] = counts.get(s_, 0) + 1
-    head = "| # | Company | Job | Fit | Apply via | Email | Status | Next step |\n|---|---|---|---|---|---|---|---|"
-    out({"markdown": head + "\n" + "\n".join(rows), "totals": counts})
+        posted = c.get("posted_date") or c.get("posted") or "-"
+        rows.append(f"| {i} | {c.get('company') or '?'} | [{c.get('role') or 'Job'}]({c['url']}) | {posted} | {c.get('fit_score') or '-'} "
+                    f"| {apply_via(c)} | {email} | **{status}** | {ostat or '-'} | {nxt or '-'} |")
+        counts[status] = counts.get(status, 0) + 1
+    head = ("| # | Company | Job | Posted | Fit | Apply via | Email | Application | Outreach | Next step |\n"
+            "|---|---|---|---|---|---|---|---|---|---|")
+    md = f"**Posting window:** {cfg['posted']}\n\n" + head + "\n" + "\n".join(rows)
+    und = [c for c in st["candidates"] if c["status"] == "undated"]
+    if und:
+        md += "\n\n**Undated jobs (no verifiable posting date; listed separately as you asked):**\n" + "\n".join(
+            f"- {c.get('company') or '?'}: [{c.get('role') or 'Job'}]({c['url']})" for c in und)
+    cnt = st["counts"]
+    excl = {REJECT_REASONS.get(k, k): v for k, v in cnt.items() if k in REJECT_REASONS and v}
+    out({"markdown": md, "totals": counts, "excluded": excl,
+         "gmail": {k: sum(1 for _, o in all_outreach(st) if o["status"] == k) for k in OUTREACH_STATUSES}})
 
 
 def summary(st) -> dict:
@@ -1134,7 +1764,9 @@ def summary(st) -> dict:
     return {
         "run_id": st["run_id"], "status": st["status"], "saved": st["saved"], "target": cfg["target"],
         "saved_by_source": st["saved_by_source"], "searches": st["searches"], "max_searches": cfg["max_searches"],
-        "skipped": {k: cnt.get(k, 0) for k in ("low_fit", "duplicate", "closed", "wrong_location", "agency", "not_job")},
+        "window": cfg["posted"],
+        "skipped": {k: cnt.get(k, 0) for k in ("low_fit", "duplicate", "closed", "wrong_location", "agency", "not_job",
+                                                "outside_window", "no_date", "paywalled")},
         "page_checked": cnt.get("page_checked", 0),
         "waiting": {s: sum(1 for c in st["candidates"] if c["status"] == s) for s in ("queued", "ready") + IN_FLIGHT},
     }
@@ -1156,62 +1788,134 @@ def cmd_export(args):
     now = dt.datetime.now()
     mode_label = "Jobs" if cfg["mode"] == "jobs" else "Clients"
 
-    new_rows = []
-    for c in sorted((c for c in st["candidates"] if c["status"] == "saved"), key=lambda c: c.get("saved_at", "")):
+    def lead_row(c, verification_extra=""):
         ct = c.get("contact") or {}
-        contact = ct.get("name", "")
-        if contact and ct.get("title"):
-            contact = f"{contact} ({ct['title']})"
-        new_rows.append({
+        named = next((e for e in c.get("emails", []) if e["type"].startswith("Named") and e.get("name")), None)
+        contact = ct.get("name", "") or (named or {}).get("name", "")
+        title = ct.get("title", "") or (named or {}).get("role", "")
+        if contact and title:
+            contact = f"{contact} ({title})"
+        email = best_email(c)
+        esrc = next((e["source"] for e in c.get("emails", []) if e.get("email") == email), "")
+        ostat, gstat = outreach_status(c)
+        app_status, nxt = lead_status(st, c)
+        ver = [c.get("open_check") or ""]
+        if cfg.get("window"):
+            ver.append({"in": "date in window", "out": "date outside window"}.get(c.get("date_verdict"), "no verifiable date"))
+        if verification_extra:
+            ver.append(verification_extra)
+        gaps = f" Gaps: {c['gaps']}." if c.get("gaps") else ""
+        posted = c.get("posted_date") or ""
+        if c.get("posted") and c["posted"] != posted:
+            posted = f"{posted} ({c['posted']})" if posted else c["posted"]
+        return {
             "Date Added": (c.get("saved_at") or now.isoformat())[:10], "Mode": mode_label,
             "Company": c.get("company", ""), "Job Title": c.get("role", ""), "Location": c.get("location", ""),
-            "Posted": c.get("posted", ""), "Source": c["source"], "Job URL": c["url"],
+            "Employment Type": c.get("employment_type", ""), "Posted": posted, "Posting Window": cfg["posted"],
+            "Date Source": c.get("date_source", ""), "Source": c["source"], "Job URL": c["url"],
+            "Verification": "; ".join(v for v in ver if v),
             "Fit Score": c.get("fit_score") if c.get("fit_score") is not None else "",
-            "Why It Fits": c.get("fit_reason", ""), "Pitch / Tip": c.get("angle", ""),
-            "Contact": contact, "Contact Link": ct.get("url", ""),
-            "Email": best_email(c), "Apply Via": apply_via(c) if cfg["mode"] == "jobs" else "",
-            "Status": lead_status(st, c)[0], "Next Step": lead_status(st, c)[1], "Run ID": st["run_id"],
-        })
+            "Why It Fits": (c.get("fit_reason", "") + gaps).strip(), "Relevant Skills": c.get("skills_matched", ""),
+            "Pitch / Tip": c.get("angle", ""), "Contact": contact, "Email": email,
+            "Contact Source": ct.get("url", "") or esrc, "Apply Via": apply_via(c) if cfg["mode"] == "jobs" else "",
+            "Application Status": app_status, "Outreach Status": ostat, "Gmail Status": gstat,
+            "Next Step": nxt, "Run ID": st["run_id"],
+        }
+
+    new_rows = [lead_row(c) for c in saved_leads(st)]
+    undated_rows = [lead_row(c, "NO VERIFIABLE POSTING DATE (listed separately)")
+                    for c in st["candidates"] if c["status"] == "undated"]
     new_contacts, new_apps = [], []
+    by_email = {}
     for c in saved_leads(st):
         for e in c.get("emails", []):
-            new_contacts.append({"Company": c.get("company", ""), "Name": e["name"], "Role": e["role"], "Email": e["email"],
-                                 "Type": e["type"], "Found On": e["source"], "Run ID": st["run_id"]})
+            sent = [o for o in c.get("outreach", []) if o["to"] == e.get("email") and e.get("email")]
+            ostat = OUTREACH_STATUSES.get(sent[-1]["status"], "") if sent else ""
+            key = e.get("email") or f"{c.get('company')}|{e.get('name')}"
+            job = f"{c.get('role', '')} ({c['url']})"
+            if key in by_email:                           # same address for several jobs: one row, all jobs
+                r = by_email[key]
+                if job not in r["Associated Job"]:
+                    r["Associated Job"] += "; " + job
+                r["Outreach Status"] = r["Outreach Status"] or ostat
+                continue
+            r = {"Company": c.get("company", ""), "Name": e.get("name", ""), "Role": e.get("role", ""),
+                 "Email": e.get("email", "") or "(no public email)", "Type": e["type"], "Source URL": e["source"],
+                 "Verification": e.get("verification", ""), "Associated Job": job, "Outreach Status": ostat,
+                 "Run ID": st["run_id"]}
+            by_email[key] = r
+            new_contacts.append(r)
         a = c.get("application") or {}
-        if a.get("status"):
-            new_apps.append({"Date": (a.get("done_at") or a.get("updated_at") or "")[:10], "Company": c.get("company", ""),
-                             "Job Title": c.get("role", ""), "Job URL": c["url"], "Apply Via": a.get("method") or apply_via(c),
-                             "Status": JOB_STATUSES.get(a["status"], a["status"]), "Next Step": a.get("next_step", ""),
-                             "Cover Letter / Message": a.get("message", ""), "Answers Used": a.get("answers", ""),
-                             "Run ID": st["run_id"]})
+        outs = c.get("outreach") or [None]
+        if not a.get("status") and outs == [None]:
+            continue
+        for k, o in enumerate(outs):
+            o = o or {}
+            g = {"sent": f"Sent {str(o.get('send_at', ''))[:10]} (id {o.get('gmail_id', '')})",
+                 "draft": f"Draft created (id {o.get('gmail_id', '')})", "failed": f"Failed: {o.get('error', '')}",
+                 "prepared": "Prepared (not in Gmail)", "skipped": "Skipped"}.get(o.get("status"), "")
+            new_apps.append({
+                "Date": (a.get("done_at") or a.get("updated_at") or o.get("prepared_at") or now.isoformat())[:10],
+                "Company": c.get("company", ""), "Job Title": c.get("role", ""), "Job URL": c["url"],
+                "Apply Via": a.get("method") or apply_via(c),
+                "Application Status": JOB_STATUSES.get(a.get("status"), a.get("status", "")) if a else "",
+                "Cover Letter": a.get("message", "") if k == 0 else "(see row above)",
+                "Application Answers": a.get("answers", "") if k == 0 else "",
+                "Outreach To": o.get("to", ""), "Outreach Subject": o.get("subject", ""), "Outreach Body": o.get("body", ""),
+                "Gmail Status": g, "Next Action": a.get("next_step", "") or ("Review the Gmail draft and send it" if o.get("status") == "draft" else ""),
+                "Run ID": st["run_id"]})
 
     cnt = st["counts"]
+    gl = st.get("gmail_log", [])
+    emails_all = [e for c in saved_leads(st) for e in c.get("emails", []) if e.get("email")]
     run_row = {
         "Run ID": st["run_id"], "Date": now.strftime("%Y-%m-%d"), "Time": now.strftime("%H:%M:%S"),
         "Run By": cfg["run_by"], "Mode": mode_label, "Roles": ", ".join(cfg["roles"]),
         "Locations": ", ".join(cfg["locations"]) + ("" if cfg["strict_location"] else " (not filtered)"),
-        "Posted Within": {"day": "Past 24 hours", "week": "Past week", "month": "Past month", "any": "Any time"}[cfg["posted"]],
+        "Posting Window": cfg["posted"], "Undated Jobs": ("listed separately" if cfg.get("undated") == "separate" else "excluded")
+        + f" ({len(undated_rows) if cfg.get('undated') == 'separate' else cnt.get('no_date', 0)})",
+        "Platforms": ", ".join(cfg.get("platforms") or ["Any"]) + (" (only)" if cfg.get("platforms_only") else ""),
+        "Agents Used": "; ".join(st.get("agents_used", [])) or "Single assistant (sequential)",
         "Ranking": {"ai": "AI (Claude)", "keyword": "Keyword", "none": "None"}[cfg["ranking"]],
         "Min Score": "" if cfg["ranking"] == "none" else cfg["min_score"], "Target": cfg["target"],
         "Saved": st["saved"],
         "Saved By Source": ", ".join(f"{k}: {v}" for k, v in sorted(st["saved_by_source"].items(), key=lambda x: -x[1])),
-        "Low Fit": cnt.get("low_fit", 0), "Duplicates": cnt.get("duplicate", 0), "Closed": cnt.get("closed", 0),
-        "Wrong Location": cnt.get("wrong_location", 0), "Agency": cnt.get("agency", 0),
-        "Not A Job": cnt.get("not_job", 0), "Page Checked": cnt.get("page_checked", 0),
-        "Searches": st["searches"], "Candidates Reviewed": len(st["candidates"]),
-        "Emails Found": len(new_contacts),
-        "Applied": sum(1 for a in new_apps if a["Status"] == "Applied"),
-        "Emailed": sum(1 for a in new_apps if a["Status"] == "Emailed"),
-        "Needs You": sum(1 for a in new_apps if a["Status"] == "Needs you"), "Status": st["status"],
-        "Notes": "; ".join(st["notes"]),
+        "Searches": st["searches"], "Candidates Reviewed": len(st["candidates"]), "Page Checked": cnt.get("page_checked", 0),
+        "Rejected (reasons)": "; ".join(f"{REJECT_REASONS[k]}: {v}" for k, v in cnt.items() if k in REJECT_REASONS and v),
+        "Duplicates": cnt.get("duplicate", 0), "Outside Window": cnt.get("outside_window", 0), "No Date": cnt.get("no_date", 0),
+        "Contacts Verified": sum(1 for e in emails_all if is_sendable(e)),
+        "Contacts Unverified": sum(1 for e in emails_all if not is_sendable(e)),
+        "Gmail Drafts": sum(1 for g in gl if g["action"] == "draft" and g["ok"]),
+        "Gmail Sent": sum(1 for g in gl if g["action"] == "send" and g["ok"]),
+        "Gmail Failed": sum(1 for g in gl if not g["ok"]),
+        "Applied": sum(1 for c in saved_leads(st) if (c.get("application") or {}).get("status") == "applied"),
+        "Needs You": sum(1 for c in saved_leads(st) if (c.get("application") or {}).get("status") == "needs_you"),
+        "Status": st["status"], "Errors / Limitations": "; ".join(st["notes"] + st.get("errors", [])),
     }
 
-    leads = [{**r, "Source": r.get("Source") or r.get("Job Board", ""), "Email": r.get("Email", ""),
-              "Contact Link": r.get("Contact Link") or r.get("Contact LinkedIn", "")}
-             for r in st["existing"]["leads"]] + new_rows
+    old_leads = []
+    for i_, r in enumerate(st["existing"]["leads"]):
+        r = dict(r)
+        rc = next((x for x in st.get("rechecks", []) if x["row"] == i_ and x["result"]), None)
+        if rc and rc["result"] == "closed":
+            r["Verification"] = f"Closed since last run (checked {rc['checked']})"
+            if str(r.get("Application Status") or "") in ("To apply", "Prepared", "New", ""):
+                r["Next Step"] = "Job closed: no action needed"
+        elif rc and rc["result"] == "open":
+            r["Verification"] = f"Still open (re-checked {rc['checked']})"
+        old_leads.append(r)
+    leads = old_leads + new_rows
     runlog = list(st["existing"]["runlog"]) + [run_row]
     contacts = list(st["existing"].get("contacts", [])) + new_contacts
     apps = list(st["existing"].get("applications", [])) + new_apps
+    excluded = list(st["existing"].get("excluded", []))
+    excluded += [{"Run ID": st["run_id"], "Title / Company": f"{c.get('company') or ''} {c.get('role') or c['title']}".strip(),
+                  "URL": c["url"], "Reason": REJECT_REASONS.get(c.get("outcome"), c.get("outcome", "")),
+                  "Detail": c.get("note") or (c.get("fit_reason", "") if c.get("outcome") == "low_fit" else "")}
+                 for c in st["candidates"] if c["status"] == "rejected"]
+    excluded += [{"Run ID": st["run_id"], "Title / Company": x["title"], "URL": x["url"],
+                  "Reason": REJECT_REASONS.get(x["outcome"], x["outcome"]), "Detail": x.get("note", "")}
+                 for x in st.get("excluded", [])]
 
     wb = openpyxl.Workbook()
     head_fill = PatternFill("solid", start_color="1F3864")
@@ -1219,7 +1923,10 @@ def cmd_export(args):
     body_font = Font(name="Arial", size=10)
     link_font = Font(name="Arial", size=10, color="0563C1", underline="single")
     score_fill = {5: "C6EFCE", 4: "E2EFDA", 3: "FFF2CC", 2: "FCE4D6", 1: "F8CBAD"}
-    widths = {"Company": 24, "Job Title": 30, "Location": 22, "Source": 16, "Job URL": 40, "Why It Fits": 48,
+    widths = {"Posted": 22, "Posting Window": 30, "Date Source": 24, "Verification": 34, "Relevant Skills": 32,
+              "Source URL": 40, "Associated Job": 44, "Outreach Subject": 36, "Outreach Body": 60, "Gmail Status": 28,
+              "Cover Letter": 60, "Application Answers": 40, "Next Action": 34, "Rejected (reasons)": 44,
+              "Errors / Limitations": 40, "Title / Company": 40, "URL": 44, "Reason": 30, "Detail": 30, "Company": 24, "Job Title": 30, "Location": 22, "Source": 16, "Job URL": 40, "Why It Fits": 48,
               "Pitch / Tip": 48, "Contact": 28, "Contact Link": 34, "Roles": 30, "Locations": 26,
               "Saved By Source": 36, "Notes": 40, "Email": 30, "Apply Via": 22, "Next Step": 36, "Found On": 40,
               "Cover Letter / Message": 60, "Answers Used": 40, "Name": 22, "Role": 24}
@@ -1237,9 +1944,10 @@ def cmd_export(args):
             for cell in row:
                 col = cols[cell.column - 1]
                 cell.font = body_font
-                cell.alignment = Alignment(vertical="top", wrap_text=col in ("Why It Fits", "Pitch / Tip", "Notes", "Next Step",
-                                                                             "Cover Letter / Message", "Answers Used"))
-                if col in ("Job URL", "Contact Link", "Found On") and str(cell.value or "").startswith("http"):
+                cell.alignment = Alignment(vertical="top", wrap_text=col in ("Why It Fits", "Pitch / Tip", "Errors / Limitations", "Next Step",
+                                                                             "Cover Letter", "Application Answers", "Outreach Body",
+                                                                             "Associated Job", "Rejected (reasons)"))
+                if col in ("Job URL", "Contact Source", "Source URL", "URL") and str(cell.value or "").startswith("http"):
                     cell.hyperlink, cell.font = str(cell.value), link_font
                 if col == "Fit Score" and str(cell.value).isdigit():
                     cell.fill = PatternFill("solid", start_color=score_fill.get(int(cell.value), "FFFFFF"))
@@ -1254,11 +1962,14 @@ def cmd_export(args):
     write(wb.create_sheet("Contacts"), CONTACT_COLUMNS, contacts)
     write(wb.create_sheet("Applications"), APPLICATION_COLUMNS, apps)
     write(wb.create_sheet("Run Log"), RUNLOG_COLUMNS, runlog)
+    if undated_rows:
+        write(wb.create_sheet("Undated Jobs"), LEAD_COLUMNS, undated_rows)
+    write(wb.create_sheet("Excluded"), EXCLUDED_COLUMNS, excluded)
     outp = Path(args.out)
     outp.parent.mkdir(parents=True, exist_ok=True)
     wb.save(outp)
     save(args, st)
-    out({"ok": True, "file": str(outp), "new_leads": len(new_rows), "total_leads": len(leads),
+    out({"ok": True, "file": str(outp), "new_leads": len(new_rows), "total_leads": len(leads), "undated": len(undated_rows),
          "emails_found": len(new_contacts), "applications_tracked": len(new_apps), "summary": summary(st),
          "next": "Run `jword.py report` and show its markdown table to the user with the file."})
 
@@ -1278,7 +1989,11 @@ def main(argv=None):
     p.add_argument("--offer", default="", help="what the user sells (clients) or a CV summary (jobs)")
     p.add_argument("--ranking", choices=["ai", "keyword", "none"], default="ai")
     p.add_argument("--min-score", default=3)
-    p.add_argument("--posted", choices=list(MAX_AGE_DAYS), default="week")
+    p.add_argument("--posted-within", default="", help="STRICT posting window: 24h, 3d, 7d, 14d, 30d, 60d, 'last 10 days', "
+                   "'this week', '2026-11-01..2026-11-10', 'between Nov 1 and Nov 10', or 'any' (default 7d)")
+    p.add_argument("--posted", default="", help="legacy alias of --posted-within (day/week/month/any)")
+    p.add_argument("--undated", choices=["exclude", "separate"], default="exclude",
+                   help="jobs with no verifiable posting date: drop them (default) or list them separately")
     p.add_argument("--verify-open", choices=["yes", "no"], default="yes")
     p.add_argument("--find-contacts", choices=["yes", "no"], default="yes")
     p.add_argument("--location-filter", choices=["strict", "keep-all"], default="strict")
@@ -1288,9 +2003,13 @@ def main(argv=None):
     p.add_argument("--target", default=10)
     p.add_argument("--run-by", default="")
     p.add_argument("--existing", default="", help="earlier Jword .xlsx/.csv: skip its leads and append to it on export")
+    p.add_argument("--recheck-previous", action="store_true", help="re-check earlier jobs and mark the ones that closed")
     p.set_defaults(fn=cmd_init)
 
-    sub.add_parser("next", help="what to do next").set_defaults(fn=cmd_next)
+    p = sub.add_parser("next", help="what to do next")
+    p.add_argument("--batch", default=REVIEW_BATCH, help="candidates per review step (Claude Code: up to 12)")
+    p.add_argument("--max-tasks", default=5, help="page checks per verify step (Claude Code: up to 15)")
+    p.set_defaults(fn=cmd_next)
     p = sub.add_parser("ingest", help="feed web-search results")
     p.add_argument("--results", required=True)
     p.set_defaults(fn=cmd_ingest)
@@ -1308,6 +2027,27 @@ def main(argv=None):
     p = sub.add_parser("profile-check", help="check the applicant profile")
     p.add_argument("--profile", required=True)
     p.set_defaults(fn=cmd_profile_check)
+    p = sub.add_parser("settings", help="store the user's contact / email / submit choices")
+    p.add_argument("--email-mode", choices=list(EMAIL_MODES), default="")
+    p.add_argument("--submit-mode", choices=list(SUBMIT_MODES), default="")
+    p.add_argument("--contact-research", choices=["jobs_only", "contacts", "contacts_outreach"], default="")
+    p.set_defaults(fn=cmd_settings)
+    p = sub.add_parser("outreach", help="record individual emails for verified contacts")
+    p.add_argument("--updates", required=True)
+    p.set_defaults(fn=cmd_outreach)
+    sub.add_parser("outbox", help="what the chosen email mode allows for each prepared email").set_defaults(fn=cmd_outbox)
+    p = sub.add_parser("gmail", help="record Gmail connector results (draft/send ids)")
+    p.add_argument("--updates", required=True)
+    p.set_defaults(fn=cmd_gmail)
+    p = sub.add_parser("shards", help="Claude Code: split searches into parallel work packets")
+    p.add_argument("--workers", default=3)
+    p.add_argument("--per-worker", default=3)
+    p.set_defaults(fn=cmd_shards)
+    p = sub.add_parser("log", help="note agents used, limitations or errors for the Run Log")
+    p.add_argument("--agents", default="")
+    p.add_argument("--note", default="")
+    p.add_argument("--error", default="")
+    p.set_defaults(fn=cmd_log)
     sub.add_parser("report", help="final status list (markdown)").set_defaults(fn=cmd_report)
     p = sub.add_parser("export", help="write the Excel file")
     p.add_argument("--out", default="jword_leads.xlsx")

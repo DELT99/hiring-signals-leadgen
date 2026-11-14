@@ -2,10 +2,11 @@
   "name": "hiring-signal-leadgen",
   "version": "1.0.0",
   "private": true,
-  "description": "n8n workflow: job postings to AI-qualified leads in Google Sheets",
+  "description": "Jword: job hunting and hiring-signal outreach for Claude (skill + Claude Code agents), plus the original n8n workflow",
   "scripts": {
     "build": "python3 scripts/build_workflow.py",
-    "test": "node tests/simulate.js"
+    "build:skill": "python3 tools/build_skill.py",
+    "test": "node tests/simulate.js && python3 skill/jword/tests/test_jword.py && python3 skill/jword/tests/test_jword_v3.py && python3 tests/test_distribution.py"
   },
   "license": "MIT"
 }

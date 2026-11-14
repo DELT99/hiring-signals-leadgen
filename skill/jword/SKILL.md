@@ -1,99 +1,99 @@
 ---
 name: jword
-description: Find open jobs or hiring-signal leads from public job postings, find company contact emails (careers, HR, recruiters, founders) from public pages, prepare tailored applications, fill and submit them in the browser, and email them via Gmail, delivering an Excel tracker plus a status list. Use for "find 10 Flutter jobs in Berlin and apply for me", "find companies hiring AI engineers in London" (sales leads), "get HR emails for these jobs", "jword", "run my job search". No API keys needed.
+description: Job-hunting and hiring-signal outreach assistant. Finds open jobs (or companies hiring, as sales leads) posted within a strict window the user picks, verifies each listing and its posting date, finds published recruiter, HR, founder and generic company emails (careers@, jobs@, hr@), writes tailored applications and an individual email per contact, creates Gmail drafts or sends with approval, and delivers an Excel tracker plus a status list. Use for "find Flutter jobs in Berlin posted this week and apply", "find recruiters and email them my CV", "companies hiring AI engineers in London", "run jword again", "/jword". No API keys needed.
 ---
 
-# Jword: hiring-signal lead engine
+# Jword: job hunting and hiring-signal outreach
 
-A job post means a company has a need right now. Jword works in stages, and the user chooses which ones to run:
+A job post means a company has a need right now. Jword runs in stages, and the user chooses which ones:
 
-1. **Find** open jobs (jobs mode) or companies that are hiring (clients mode): searched, filtered, scored and page-checked.
-2. **Contacts** *(optional)*: emails published by those companies (careers@, HR, recruiters, founders) from their own public pages.
-3. **Prepare** *(optional, jobs mode)*: a tailored cover letter and answers for each job, built only from the user's CV or profile.
-4. **Apply** *(optional)*: fill and submit application forms in the browser, and/or send applications or outreach by Gmail.
-5. **Deliver**: an Excel tracker and a status list in chat.
+1. **Find** open jobs (*jobs* mode) or companies hiring (*clients* mode), posted inside the user's window.
+2. **Contacts**: published emails of recruiters, HR, hiring managers, founders, plus generic hiring inboxes.
+3. **Prepare**: a cover letter and answers per job, using only facts from the CV.
+4. **Outreach and apply**: one individual email per contact (Gmail drafts or approved sends), and form filling in a browser.
+5. **Deliver**: an Excel tracker plus a status table in chat.
 
-You (Claude) search, read, judge, write and drive the browser. `scripts/jword.py` does the exact bookkeeping: search plan, filters, scoring rules, de-duplication, contact validation, status tracking and the Excel file. **Always do what the script says next. Never rebuild its logic by hand.** `SKILL_DIR` is the folder containing this file.
+You (Claude) search, read, judge, write and act. `scripts/jword.py` is the source of truth for every deterministic part: the posting-date window, filters, de-duplication, contact validation, email checks, the send policy, status tracking and the Excel file. **Do what the script says next. Never redo its logic by hand or override a refusal.** `SKILL_DIR` is the folder containing this file. Python 3 with `openpyxl` is required (install with `pip install openpyxl` if it's missing).
 
-## Step 1: Gather the inputs
+**How to execute:** if you can launch the subagents `job-researcher`, `contact-researcher`, `application-writer` and `outreach-writer` (Claude Code with this repo's `.claude/agents/`), follow `references/orchestration.md` for parallel work. Otherwise (Claude chat, Cowork, or any other app), do every stage yourself, in order and in small batches. The results and rules are the same either way.
 
-Read what the user already said; ask only for what's missing. Use the multiple-choice question tool if you have one, otherwise one short message.
+## Step 1: Gather the inputs (before any search)
 
-| Input | Ask? | Default / notes |
+Read what the user already said and ask only for what's missing, in **one** round. Use the multiple-choice question tool if you have one.
+
+| Input | Ask? | Notes |
 |---|---|---|
 | Mode | **Always** | *Find jobs for me* or *Find clients* (companies hiring) |
 | Roles | **Always** | One or more, e.g. `Flutter Developer, AI Engineer` |
-| Locations | **Always** | Any cities or countries, `Remote`, or `Anywhere` |
-| CV / offer | **Always** | Jobs: **the user's CV (attach it) or a summary of skills and experience**, which is required for scoring and applying. Clients: what they sell |
-| Platforms | **Always** (multi-select) | *Any (recommended for finding)*, *Company career pages / ATS: Greenhouse, Lever, Ashby, Workable (best for auto-apply)*, *LinkedIn*, *Indeed*, *Wellfound*, *Built In*. Pass as `--platforms`; add `--platforms-only` if the user wants nothing else |
-| Number | If not given | **10** (or 25; maximum 25) |
-| Ranking / min score / posted within / open-check / location filter / agencies | No | `ai` / 3 / `week` / yes / `strict` / skip agencies in clients mode, keep them in jobs mode |
-| Earlier Jword file | If attached | `--existing <file>`: its jobs are skipped; the new ones are appended (all four sheets) |
+| Locations | **Always** | Cities, countries, `Remote` or `Anywhere` |
+| **Posted within** | **Always** | Ask: **"How recently should the jobs have been posted?"** Options: *Last 24 hours / Last 3 days / Last 7 days / Last 14 days / Last 30 days / Last 60 days / Custom date range*. Free text works too: "last 10 days", "between Nov 1 and Nov 10", "this week". Pass it as `--posted-within`. |
+| Undated jobs | Only if the user mentions them | Default: excluded. `--undated separate` lists them in their own sheet, only if the user explicitly allows it |
+| CV / offer | **Always** | Jobs mode: **the CV (attach it) or a summary of skills and experience**, which is needed for scoring and writing. Clients mode: what they sell |
+| Platforms | **Always** (multi-select) | *Any (recommended)*, *Company career pages / ATS*, *LinkedIn*, *Indeed*, *Wellfound*, *Built In* → `--platforms` (add `--platforms-only` if the user wants nothing else) |
+| Contacts | **Always** | **"Would you like me to find company contacts and publicly available email addresses too?"** *Jobs only / Jobs + company contact research / Jobs + contact research + personalized Gmail outreach* |
+| Number | If not given | **10** (maximum 25) |
+| Earlier Jword file | If attached | `--existing <file> --recheck-previous`: skips known jobs, keeps statuses, re-checks old jobs, never re-emails |
+
+**The posting window is a hard rule.** The script drops jobs dated outside it, and jobs with no verifiable *original* posting date. "Updated", "reposted" or "reviewed" dates are not posting dates. **Never widen the window to reach the number.** If fewer jobs qualify, deliver fewer and say why.
 
 ## Step 2: Find (the search loop)
 
 ```bash
 python3 SKILL_DIR/scripts/jword.py init --mode jobs --roles "Flutter Developer, AI Engineer" \
-  --locations "Berlin, Remote" --offer "<CV summary or what they sell>" --target 10 \
-  --platforms "Company career pages, Lever, Greenhouse" --run-by "<name>"
+  --locations "Berlin, Remote" --posted-within "7d" --offer "<CV summary or what they sell>" \
+  --target 10 --platforms "Company career pages, LinkedIn" --run-by "<name>"
 ```
-Tell the user in one line what you're doing. Then repeat `python3 SKILL_DIR/scripts/jword.py next` until it says `done`. It returns one action:
+Tell the user in one line what you're doing (including the window). Then repeat `python3 SKILL_DIR/scripts/jword.py next` until it says `done`:
 
-- **`search`**: run your web search with the exact `query`. Write **every** result to JSON as `[{"title","url","snippet"}]`, keeping the title, company, location, "Posted …", "Closes …" and any "expired / filled / removed" wording (up to ~700 characters per snippet). Never invent results; use `[]` if the search failed. Then run `ingest --results <file>`.
-- **`review`** (AI ranking): score each candidate with `references/scoring-rubric.md` and write `[{"id","is_job_posting","is_open","is_agency","company","role","location","fit_score","fit_reason","angle"}]`. Then run `apply --updates <file>`.
-- **`verify`**:
-  - `open_check`: web-fetch the URL. Reply `{"id","open": true|false|null,"posted"}`. If the listing hid the employer and the page names it, add `"company"` plus a rewritten `"fit_reason"` and `"angle"`. If unsure, add `"page_text"` (first ~3000 characters).
-  - `contact` (clients mode): web-search the query. Pick a person only if a result clearly shows their **name and title at this company**: `{"id","contact":{"name","title","url"}}` or `{"id","contact":null}`.
-  - Apply all replies with `apply --updates <file>`.
+- **`search`**: run your web search with the exact `query`. Save **every** result to JSON as `[{"title","url","snippet"}]`, keeping the company, location, any "Posted …", "Updated …" or "Closes …" text, and any "expired / filled" wording (up to ~700 characters). Never invent results; save `[]` if the search failed. Then run `ingest --results <file>`.
+- **`review`**: score each candidate with `references/scoring-rubric.md` and save `[{"id","is_job_posting","is_open","is_agency","company","role","location","employment_type","fit_score","fit_reason","skills_matched","gaps","angle"}]`. Then run `apply --updates <file>`.
+- **`verify`**, then `apply --updates <file>` with all replies:
+  - `open_check`: web-fetch the URL. Reply `{"id","open": true|false|null,"posted","updated","posted_source"}`. `posted` is the **original posting date exactly as the page labels it** ("Posted 3 days ago", "Date posted: 2026-11-10", JSON-LD `datePosted`). If the page only shows an updated or reposted date, put it in `updated` and leave `posted` empty. If the employer was hidden and the page names it, add `"company"` with a rewritten `"fit_reason"` and `"angle"`. If the page changes the fit (location limits, years required, unpaid), add a new `"fit_score"`. If the URL now shows a list of *other* jobs, use `"open": false`. If the fetch fails, search once for the company's own posting and check that.
+  - `recheck`: a job from the earlier tracker. Reply `{"id","open"}`.
+  - `contact` (clients mode): pick a person only if a result clearly shows their **name and title at this company**: `{"id","contact":{"name","title","url"}}` or `{"id","contact":null}`.
 - **`done`**: go to Step 3.
 
-Give the user a one-line update about every 5 saved jobs; don't narrate every step.
+Send a one-line update about every 5 saved jobs. Don't narrate each step.
 
-## Step 3: Ask what to do next
+## Step 3: Agree what happens next
 
-Run `python3 SKILL_DIR/scripts/jword.py plan` and show a short numbered list (company, job, fit score, how to apply). **Check what's available in this chat first**, and only offer what can actually be done:
-- **Browser**: Claude in Chrome tools, the built-in browser, or computer use. If none is available: "Filling forms needs Claude in Chrome or the Claude desktop app's browser".
-- **Gmail**: Gmail connector tools such as create_draft or send_message. If missing: "Connect Gmail under Settings → Connectors to email applications".
+Run `jword.py plan` and show a short numbered list (company, job, posted date, fit, how to apply). **Check which tools this chat really has** and only offer what can be done:
+- **Gmail**: connector tools such as `create_draft` and `send_message`. If missing: *"Connect Gmail in Settings → Connectors to create drafts; meanwhile I can write the emails here."*
+- **Browser**: Claude in Chrome, the desktop app's built-in browser, or computer use. If missing: *"Form filling needs Claude in Chrome or the Claude desktop app's browser."*
 
-Then ask (multi-select). Every option can be skipped:
+If the user chose contacts in Step 1, confirm it. Then ask:
+- **"How would you like me to handle the emails?"** *Find contacts only / Prepare emails in chat / Create Gmail drafts (recommended) / Ask for approval before sending each email / Capped automatic sending (job applications to verified hiring addresses only, max 10)*. In clients mode, B2B emails are **never** sent automatically: offer drafts or approve-each only.
+- Only if a browser is available: **"Should I fill application forms?"** *Ask me before each submit (recommended) / Submit when every answer is from my profile / Fill only, I'll press Submit / No forms*.
+- *"Reply with job numbers to skip any."* (record those with `track` status `skipped`)
 
-**"What should I do with these jobs?"**
-- Find contact emails (careers, HR, recruiters, founders)
-- Prepare tailored applications (cover letter + answers): *jobs mode*
-- Fill and submit applications in the browser: *jobs mode, needs a browser*
-- Email applications / outreach via Gmail: *needs Gmail*
-- Nothing else, just give me the Excel
+Save the choices before acting: `jword.py settings --email-mode drafts --submit-mode ask_each --contact-research contacts_outreach` (email modes: `contacts_only`, `chat`, `drafts`, `approve_each`, `auto`). Drafts permission is **not** send permission.
 
-If they chose **submitting**, ask **"How should I submit?"**: *Ask me before each submit (recommended)* / *Submit automatically when every answer comes from my profile; ask only if something's missing* / *Fill the forms, I'll press Submit myself*.
-If they chose **email**, ask **"How should I send?"**: *Gmail drafts for me to review (recommended)* / *Send each after I approve it* / *Auto-send job applications to published careers/HR addresses (max 10 per run)*. Cold outreach in **clients mode** is always drafts or approve-each, never auto-sent.
-Also say: *"Reply with job numbers to skip any."* Then mark the skipped ones with `track` status `skipped`.
+## Step 4: Contacts (if chosen)
+Follow **`references/contacts.md`**. For every shortlisted company, find **all** useful published contacts: named recruiters, HR, talent acquisition, hiring managers and founders, plus generic hiring inboxes (careers@, jobs@, hr@, recruitment@, talent@, info@). Record them with `contacts --updates <file>`. Each email needs its `source_url` and `evidence` (the quoted text containing the address); named people with no public email go in `people`. The script refuses guesses and marks third-party sources *Unverified*. Those are never emailed. If nothing is found, say so plainly.
 
-## Step 4: Contacts *(if chosen)*
-Follow **`references/contacts.md`**. For each job, use only emails that appear on public pages (the job post, the company's careers/contact/about/team pages, press pages, or search results showing the address). Record them with `contacts --updates <file>`; each email needs its `source_url` and `evidence` (the quoted text containing the address). **The script refuses guesses.** Emails printed in the posting are captured automatically.
+## Step 5: Prepare (jobs mode)
+1. Build the **applicant profile** from the CV (`references/applicant-profile.md`), save it as `applicant_profile.json` and run `profile-check --profile applicant_profile.json`. Ask for all missing fields in **one** message. Never fill gaps yourself.
+2. For each job, write a cover letter (≤200 words) and short answers, using **only facts from the profile** and the job's real requirements. Record them with `track` (status `prepared`, letter in `message`, a summary in `answers`).
 
-## Step 5: Prepare *(if chosen, jobs mode; required before submitting)*
-1. Build the **applicant profile** from the CV or details: `references/applicant-profile.md`. Save it as `applicant_profile.json` and run `profile-check --profile applicant_profile.json`. Ask the user for every missing field in **one** message (yes/no items as options). Never fill gaps yourself.
-2. For each job, write a cover letter (≤200 words) and short answers to common questions **using only facts from the profile**. Record each with `track` status `prepared`, putting the letter in `message` and a one-line summary in `answers`.
-
-## Step 6: Apply *(if chosen)*
-- **Browser** (`references/applying.md`): load the browser's own skill first if one is listed (e.g. `chrome-browser` / `built-in-browser`). Fill one form at a time and follow the chosen submit mode exactly. **Hand back to the user** (status `needs_you` + a precise `next_step`) when there's a login or account creation, a CAPTCHA, an assessment or video interview, payment, a question the profile doesn't answer, or a **CV upload you can't perform**: leave the form open and say so, e.g. *"Upload your CV and press Submit: tab 3, Acme form"*. **LinkedIn, Indeed, Glassdoor and ZipRecruiter** (`apply_via` says *apply yourself*): never submit there; give the user the link and the prepared answers.
-- **Gmail** (`references/outreach.md`): one email per company, to the best address. Attach the CV if the Gmail tool supports attachments; otherwise create a draft and set `next_step` to *"Attach your CV and send"*.
-- After **every** action, record it straight away: `track --updates <file>` with `{"id","status","next_step","message","answers"}`. Statuses: `applied`, `prepared`, `needs_you`, `draft_ready`, `emailed`, `skipped`, `failed`. If the **user** applied on a no-automation site, add `"by_user": true`.
+## Step 6: Outreach and apply
+- **Emails** (`references/outreach.md`): write **one individual email per verified contact**: its own subject, the real job, the recipient's name and role (or a generic-inbox greeting), and the user's true, relevant experience. Record them with `outreach --updates <file>`. The script refuses unverified recipients, placeholders, near-copies across companies and repeat contacts. Show the user the recipients and subjects, run `outbox`, and do **only** what each item's `allowed` says (`draft`, `send`, `send_after_approval` = show the email and wait for a yes, or `none` = chat only). After **every** Gmail call, record the result with `gmail --updates <file>` and the **id the connector returned**. Never say an email was sent or drafted without that id.
+- **Forms** (`references/applying.md`): follow the chosen submit mode exactly. Hand back to the user (`needs_you` + a precise `next_step`) for logins, CAPTCHAs, tests, payments, unanswered questions, or a CV upload you can't do. LinkedIn, Indeed, Glassdoor and ZipRecruiter: never submit; give the link and the prepared answers.
+- Record each application step at once with `track` (`applied`, `prepared`, `needs_you`, `skipped`, `failed`).
 
 ## Step 7: Deliver
 ```bash
 python3 SKILL_DIR/scripts/jword.py export --out <outputs>/jword_<YYYY-MM-DD>.xlsx
 python3 SKILL_DIR/scripts/jword.py report
 ```
-Give the user the file and **paste the `report` markdown table** (company, job, fit, apply via, email, **status**, **next step**). Then add 2–3 lines: totals (applied / needs you / emailed / skipped), what was filtered and why, and what the user should do next, starting with the *Needs you* items.
+Send the file and **paste the `report` table**. Then add 2–3 lines: totals (applied, drafts, sent, needs you), what was excluded and why (from `excluded`: outside the window, no date, closed, duplicates…), and the user's next steps, starting with *Needs you*.
 
-**Sheets:** **Leads** (Date Added, Mode, Company, Job Title, Location, Posted, Source, Job URL, Fit Score, Why It Fits, Pitch / Tip, Contact, Contact Link, Email, Apply Via, Status, Next Step, Run ID) · **Contacts** (Company, Name, Role, Email, Type, Found On, Run ID) · **Applications** (Date, Company, Job Title, Job URL, Apply Via, Status, Next Step, Cover Letter / Message, Answers Used, Run ID) · **Run Log**.
+**Sheets:** **Leads** (one row per job: posting date, its source, the window, verification, fit, relevant skills, contact, application, outreach and Gmail status, next step) · **Contacts** (name, role, email, named/generic, source URL, verification, associated job, outreach status) · **Applications** (cover letter, answers, outreach subject and body, Gmail status, next action) · **Run Log** (window, platforms, agents used, rejection reasons, contact and Gmail totals, limitations) · **Excluded** (every dropped result and why) · **Undated Jobs** (only with `--undated separate`).
 
 ## Rules
-- **Never invent** jobs, companies, people, email addresses, experience, qualifications, dates or answers. If it isn't in the profile, ask or hand back to the user.
-- **Never submit or send** except in the mode the user chose. If in doubt, stop and ask. Applications and emails can't be taken back.
-- Don't fetch LinkedIn pages, and don't automate LinkedIn, Indeed, Glassdoor or ZipRecruiter applications.
-- Don't solve CAPTCHAs, create accounts, or enter passwords. The user does those.
-- Emails: published business addresses only, with the source recorded. No guessing (`first.last@`), no personal mailboxes unless the job post lists one, no scraping behind logins. In clients mode, keep outreach honest and short, with an easy opt-out line.
-- Keep the CV and profile private: use them only to fill the user's own applications, and never put them in search queries.
-- If web search isn't available, tell the user Jword needs it and stop.
+- **Never invent** jobs, dates, salaries, companies, people, email addresses, qualifications, experience or answers.
+- **The posting window is never relaxed**, by you or by any subagent.
+- **Never submit or send** outside the chosen mode. B2B sales emails are never auto-sent. When in doubt, stop and ask: applications and emails can't be taken back.
+- **Emails go only to verified, published addresses**, one tailored email per recipient, never identical copies, and never to an address already contacted (this run or earlier) unless the user explicitly asks.
+- Don't fetch LinkedIn pages or automate LinkedIn, Indeed, Glassdoor or ZipRecruiter. Don't solve CAPTCHAs, create accounts or type passwords.
+- Keep the CV private: use it only for the user's own applications, never in search queries.
+- If web search isn't available, say that Jword needs it and stop. If Gmail or a browser is missing, say so in one line and continue with everything else.
