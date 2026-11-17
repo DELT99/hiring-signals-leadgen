@@ -190,7 +190,7 @@ def ai_mode_clients_full_run():
         assert all(l["Contact"] == "Sam Lee (CTO)" and str(l["Contact Source"]).startswith("https://www.linkedin.com/in/") for l in leads)
         assert len({l["Job URL"] for l in leads}) == 10
         assert log[0]["Saved"] == 10 and log[0]["Ranking"] == "AI (Claude)" and log[0]["Page Checked"] >= 10
-        assert all("site:" not in q for q in stats["queries"])
+        assert any(q.startswith("site:") for q in stats["queries"])     # board-scoped searches (site: works now)
         print(f"   searches={stats['search']} reviews={stats['review']} verifies={stats['verify']} sources={by}")
 
 
@@ -432,7 +432,8 @@ def preferred_platforms():
         _, (leads, _), _ = export(tmp)
         assert leads and all(l["Source"] == "Lever" or l["Source"].endswith(".com") or l["Source"] in ("Recruitee", "Greenhouse") for l in leads), [l["Source"] for l in leads]
         assert not any(l["Source"] == "Built In" for l in leads)
-        assert all("jobs.lever.co" in q or "careers page" in q for q in stats["queries"])
+        assert all(q.startswith(("site:jobs.lever.co", "site:greenhouse.io", "site:workable.com", "site:jobs.ashbyhq.com"))
+                   for q in stats["queries"]), stats["queries"]     # only the chosen boards, n8n-style
         assert "error" in run(tmp, *BASE, "--platforms", "Monster", ok=False)
 
 

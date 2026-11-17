@@ -70,6 +70,17 @@ def original_vs_updated_dates():
     assert J.window_verdict(J.estimate_posting("1 week ago", T), w14, T) == "in"
     e = J.estimate_posting("Listing details: First seen June 16, 2026", T)
     assert e["kind"] == "updated" and J.window_verdict(e, w14, T) == "out"
+    e = J.estimate_posting("Flutter Developer. Lahore. Pay 80,000. Similar jobs Sadeema Egypt about 1 hour ago", T)
+    assert e is None                                     # sidebar dates belong to other jobs
+    e = J.estimate_posting("AI Engineer. Date: 2 weeks ago. City: Lahore. Similar jobs Contegris 2 days ago", T)
+    assert e["min"] == 14
+    for x, n in (("Posted 2d ago", 2), ("Posted a day ago", 1), ("1 day, 2 hours ago", 1), ("Posted YDay", 1),
+                 ("Date: 6 hours ago", 0), ("about 2 months ago", 56)):
+        assert J.estimate_posting(x, T)["min"] == n, x
+    assert J.estimate_posting("Active 2 days ago", T)["kind"] == "updated"
+    assert J.estimate_posting("Ali Khan · HR Manager 2d • We're hiring Flutter devs", T)["min"] == 2
+    assert J.estimate_posting("AI Engineer. Posting Date: Nov 07, 2026. Similar Job Titles AI Engineer Posted Nov 15, 2026", T)["min"] == 8
+    assert J.window_verdict(J.estimate_posting("Posted last year", T), w14, T) == "out"
     assert J.closing_passed("Applications will be accepted until March 8, 2026.") and J.closing_passed("Apply before Apr 6, 2025")
     assert J.window_verdict(None, w14, T) == "unclear" and J.window_verdict(None, None, T) == "in"
 
@@ -193,6 +204,20 @@ def contact_types_verification_and_dedupe():
         assert ana["Type"] == "Named" and ana["Role"] == "Talent Acquisition" and ana["Verification"] == "Verified: company website"
         assert next(x for x in d if x["Email"] == "jobs@firm1.com")["Verification"].startswith("Unverified")
         assert any(x["Name"] == "Omar Q" and x["Email"] == "(no public email)" for x in d)
+
+
+@test
+def job_board_is_not_the_company_site():
+    c = {"company": "Bricks Tech", "url": "https://jobs.taraki.co/jobs/ai-engineer-bricks-tech"}
+    assert not J.looks_like_company_site(c, "taraki.co") and J.looks_like_company_site(c, "brickstech.com")
+    assert J.looks_like_company_site({"company": "Abyan Capital"}, "abyan-capital.breezy.hr".split(".")[0] + ".com")
+    with tempfile.TemporaryDirectory() as tmp:
+        a, _, _ = saved_run(tmp)
+        st = json.loads((Path(tmp) / "state.json").read_text())
+        url = next(x["url"] for x in st["candidates"] if x["id"] == a)
+        r = run(tmp, "contacts", "--updates", write(tmp, "c.json", [{"id": a, "website": url, "emails": [
+            {"email": "support@lever.co", "source_url": url, "evidence": "help: support@lever.co"}]}]))
+        assert any("job board" in x["why"] for x in r["refused"])
 
 
 @test
@@ -360,6 +385,188 @@ def shards_share_window_and_ingest_packets():
         assert r["searches"] == 2 and r["stats"]["outside_window"] == 1
         st = json.loads((Path(tmp) / "state.json").read_text())
         assert st["searches"] == 2 and len(st["issued"]) == 4
+
+
+# ------------------------------------------------------------------ chat-flow fixes (live test, Nov 17)
+
+@test
+def ingest_and_apply_print_the_next_action():
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, *JOBS, "--posted-within", "7d", "--target", "2")
+        run(tmp, "next")
+        r = run(tmp, "ingest", "--results", write(tmp, "r.json", [res(1, "Posted 2d ago. Remote Flutter Dart Firebase.")]))
+        assert r["next_action"]["action"] in ("search", "review", "verify", "done") and "next" not in r
+
+
+@test
+def boards_follow_the_options_like_the_n8n_agent():
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, "init", "--mode", "jobs", "--roles", "AI Engineer", "--locations", "Lahore, Remote",
+            "--posted-within", "3d", "--ranking", "keyword", "--target", "10")
+        qs = []
+        for _ in range(9):
+            qs.append(run(tmp, "next")["query"])
+            run(tmp, "ingest", "--results", write(tmp, "e.json", []))
+        st = json.loads((Path(tmp) / "state.json").read_text())
+        names = [b["name"] for b in st["boards"]]
+        assert names[:2] == ["open_web", "linkedin"] and {"rozee", "hiredpk", "greenhouse", "remotive"} <= set(names), names
+        assert qs[0] == "AI Engineer jobs Lahore posted 2 days ago", qs[0]
+        assert any(q.startswith("site:linkedin.com") for q in qs) and any(q.startswith("site:rozee.pk") for q in qs), qs
+        assert all("remote-first" not in q for q in qs)
+        rozee = next(b for b in st["boards"] if b["name"] == "rozee")
+        assert rozee["locs"] == ["Lahore"]                    # regional boards only serve their own country
+    with tempfile.TemporaryDirectory() as tmp:               # user picked boards: only those (+ open web)
+        run(tmp, "init", "--mode", "jobs", "--roles", "Flutter Developer", "--locations", "Remote", "--posted-within", "7d",
+            "--ranking", "keyword", "--platforms", "Company career pages, Wellfound", "--platforms-only")
+        st = json.loads((Path(tmp) / "state.json").read_text()) if (Path(tmp) / "state.json").exists() else None
+        q = run(tmp, "next")["query"]
+        st = json.loads((Path(tmp) / "state.json").read_text())
+        assert [b["name"] for b in st["boards"]] == ["greenhouse", "lever", "workable", "ashby", "wellfound"]
+        assert q.startswith("site:greenhouse.io"), q
+
+
+@test
+def dry_boards_are_skipped_and_productive_ones_kept():
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, "init", "--mode", "jobs", "--roles", "Flutter Developer", "--locations", "Remote",
+            "--posted-within", "7d", "--ranking", "keyword", "--verify-open", "no", "--target", "6",
+            "--offer", "Flutter Dart Firebase")
+        used = []
+        for n in range(10):
+            nx = run(tmp, "next")
+            if nx["action"] != "search":
+                break
+            used.append(nx["board"])
+            res = [res_(n, k) for k in range(2)] if nx["board"] == "remotive" else []
+            run(tmp, "ingest", "--results", write(tmp, "r.json", res))
+        st = json.loads((Path(tmp) / "state.json").read_text())
+        dry = [b["name"] for b in st["boards"] if J.board_dry(st, b)]
+        assert "linkedin" in dry and "remotive" not in dry, (dry, used)
+
+
+def res_(n, k):
+    return {"title": f"Flutter Developer at Rco{n}{k}", "url": f"https://remotive.com/remote/jobs/dev/flutter-{n}{k}",
+            "snippet": "Posted 1d ago. Worldwide. Flutter Dart Firebase."}
+
+
+@test
+def profile_check_lets_writing_start_without_form_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = write(tmp, "p.json", {"full_name": "Sam", "experience": [{"title": "Dev"}], "skills": ["Flutter"]})
+        r = run(tmp, "profile-check", "--profile", f, ok=False)
+        assert r["ready_for_writing"] and not r["ready_for_forms"] and "phone" in r["missing_for_forms"]
+        f = write(tmp, "p2.json", {"skills": ["Flutter"]})
+        r = run(tmp, "profile-check", "--profile", f, ok=False)
+        assert not r["ready_for_writing"] and "full_name" in r["missing_for_writing"]
+
+
+@test
+def page_names_hidden_employer_and_boards_are_labelled():
+    results = [{"title": "AI Engineer @Remote World", "url": "https://remotive.com/remote/jobs/ai/ai-engineer-123",
+                "snippet": "Posted 2d ago. Worldwide. Flutter Dart Firebase AI Engineer."}]
+    with tempfile.TemporaryDirectory() as tmp:
+        args = [a for a in JOBS if a not in ("--verify-open", "no")]
+        args[args.index("keyword")] = "ai"
+        run(tmp, *args, "--posted-within", "7d", "--target", "1")
+        drive(tmp, results_fn=fixed(results),
+              page_fn=lambda t: {"open": True, "posted": "Posted 2d ago", "company": "Remote World Ltd"},
+              verdict_fn=lambda c: {"is_job_posting": True, "is_open": True, "is_agency": False, "fit_score": 4,
+                                    "company": "Remote World (client not named)", "role": "AI Engineer",
+                                    "location": "Remote", "fit_reason": "fits", "angle": "x"})
+        lead = run(tmp, "plan")["leads"][0]
+        assert lead["company"] == "Remote World Ltd", lead
+        assert lead["apply_via"].startswith("Via Remotive"), lead["apply_via"]
+
+
+@test
+def no_hr_email_means_search_the_company_website_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b, c = saved_run(tmp)
+        r = run(tmp, "contacts", "--updates", write(tmp, "c.json", [
+            {"id": a, "emails": []},
+            {"id": b, "emails": [{"email": "info@firm2.com", "source_url": "https://firm2.com/contact", "evidence": "info@firm2.com"}],
+             "website": "https://firm2.com"},
+            {"id": c, "emails": [{"email": "careers@firm3.com", "source_url": "https://firm3.com/careers", "evidence": "careers@firm3.com"}]}]))
+        inc = {x["id"]: x for x in r["incomplete"]}
+        assert set(inc) == {a}, inc                       # b searched its website, c has a hiring inbox
+        assert any("official website" in q for q in inc[a]["queries"])
+        plan = {l["id"]: l for l in run(tmp, "plan")["leads"]}
+        assert not plan[a]["contacts_checked"] and plan[a]["contact_queries"]
+        assert plan[b]["contacts_checked"] and plan[c]["contacts_checked"]
+        r = run(tmp, "contacts", "--updates", write(tmp, "c2.json", [
+            {"id": a, "website": "https://firm1.com", "emails": [
+                {"email": "hr@firm1.com", "source_url": "https://firm1.com/contact", "evidence": "HR: hr@firm1.com"}]}]))
+        assert not r["incomplete"]
+        assert {l["id"]: l for l in run(tmp, "plan")["leads"]}[a]["emails"] == ["hr@firm1.com"]
+
+
+@test
+def linkedin_gets_priority_but_not_a_monopoly():
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, "init", "--mode", "jobs", "--roles", "Flutter Developer", "--locations", "Remote",
+            "--posted-within", "7d", "--ranking", "keyword", "--target", "10")
+        qs = []
+        for _ in range(6):
+            qs.append(run(tmp, "next")["query"])
+            run(tmp, "ingest", "--results", write(tmp, "e.json", []))
+        li = [q for q in qs if q.startswith("site:linkedin.com")]
+        assert 1 <= len(li) <= 3, qs                      # LinkedIn is weighted, never the only source
+        st = json.loads((Path(tmp) / "state.json").read_text())
+        assert J.source_cap(st, "LinkedIn") == 4 and J.source_cap(st, "Remotive") == 4 - 0   # 40% vs 33% of 10
+        st["config"]["target"] = 20
+        assert J.source_cap(st, "LinkedIn") == 8 and J.source_cap(st, "Built In") == 7
+
+
+@test
+def dated_boards_are_searched_with_this_months_date_words():
+    # Rozee & co print "Posting Date: Nov 09, 2026"; anchoring on the month returns fresh, dated listings.
+    cfg = {"window": {"start": "2026-10-28", "end": "2026-11-03"}}
+    assert J.date_hints(cfg) == ['"Nov" "2026"', '"Oct" "2026"']
+    assert J.date_hints({"window": {"start": "2026-11-10", "end": "2026-11-17"}}) == ['"Nov" "2026"']
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, "init", "--mode", "jobs", "--roles", "Flutter Developer", "--locations", "Lahore",
+            "--posted-within", "7d", "--ranking", "keyword", "--target", "10")
+        qs = []
+        for _ in range(6):
+            qs.append(run(tmp, "next")["query"])
+            run(tmp, "ingest", "--results", write(tmp, "e.json", []))
+        mon = f'"{T0.strftime("%b")}" "{T0.year}"'
+        rozee = [q for q in qs if q.startswith("site:rozee.pk")]
+        assert rozee and mon in rozee[0], qs
+        assert not any(mon in q for q in qs if q.startswith("site:greenhouse.io")), qs   # ATS pages carry no dates
+
+
+@test
+def role_variants_are_recognised_but_lookalikes_are_not():
+    pats = J.role_matchers(["AI Engineer", "Flutter Developer"])
+    hit = lambda t: any(p.search(t.lower()) for p in pats)  # noqa: E731
+    for t in ["AI/ML Engineer - bilytica", "AI & ML Engineer", "Artificial Intelligence Engineer", "Senior AI Engineer",
+              "Gen AI Engineer", "AI Solutions Engineer", "Flutter Dev (Remote)"]:
+        assert hit(t), t
+    for t in ["Air conditioning engineer", "Mail engineer", "Senior Engineer", "Sales Manager"]:
+        assert not hit(t), t
+
+
+@test
+def a_page_of_old_listings_does_not_end_the_run():
+    # n8n runs its whole search budget; one search full of expired pages must not trip the stop rule.
+    with tempfile.TemporaryDirectory() as tmp:
+        run(tmp, "init", "--mode", "jobs", "--roles", "Flutter Developer", "--locations", "Remote",
+            "--posted-within", "7d", "--ranking", "keyword", "--target", "10")
+        for n in range(3):
+            assert run(tmp, "next")["action"] == "search"
+            old = [res(100 * n + k, "This job has expired. Flutter Dart.") for k in range(20)]
+            run(tmp, "ingest", "--results", write(tmp, "o.json", old))
+        sp = Path(tmp) / "state.json"
+        st = json.loads(sp.read_text())
+        assert st["dry_searches"] == 3
+        st["consecutive_misses"] = 200          # many rejected results (old/closed pages) ...
+        sp.write_text(json.dumps(st))
+        assert run(tmp, "next")["action"] == "search"     # ... still not a reason to stop
+        st = json.loads(sp.read_text())
+        st["dry_searches"] = 40                  # many searches in a row with nothing saved: stop
+        sp.write_text(json.dumps(st))
+        assert run(tmp, "next")["status"] == "retry_limit_reached"
 
 
 if __name__ == "__main__":

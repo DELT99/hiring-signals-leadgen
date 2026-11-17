@@ -19,16 +19,24 @@ No API keys, no n8n and no coding are needed. It runs on Claude's web search, re
 ---
 
 ## How it works
+**First, Jword always asks you** (as tap-to-answer options): how recently the jobs should have been posted (24 hours to 60 days, or your own dates), where to search (anywhere, company career pages / ATS, LinkedIn, Indeed, Wellfound, remote job boards, Built In), and what to do with the jobs (just find them / + find recruiter and HR emails / + write an application and email for each job as Gmail drafts). It also asks for your roles, locations and CV if you haven't given them. After that it works through every stage without stopping, except to ask how to handle the emails.
+
 | Stage | What Jword does | You decide |
 |---|---|---|
-| 1. **Find** | Searches job boards, company career pages and remote boards for every role × location. Drops listing pages, closed or paywalled jobs, duplicates and wrong locations, and **anything outside your posting window or without a verifiable posting date**. Scores each job 1–5 against your CV (with the gaps, honestly) and opens it to confirm it's still accepting applications. | roles, locations, **how recent**, platforms, how many |
-| 2. **Contacts** | Finds named recruiters, HR, talent and hiring managers and founders, plus generic hiring inboxes, **only from public pages**, each with its source and a verification status. Never guesses an address. | jobs only / + contacts / + contacts and outreach |
+| 1. **Find** | Searches like the n8n agent, with no API keys: each search targets one board with a `site:` filter. The boards come from your options: the open web, **LinkedIn hiring posts**, your location's own boards (e.g. Rozee.pk, Hired.pk and Taraki for Pakistan, Bayt, Naukri, Reed), Greenhouse, Workable, Lever and remote boards. Every role × location gets a turn, the board furthest behind its share goes next, and dry boards are skipped. **LinkedIn gets priority** (about one search in three, and up to ~40% of the jobs) but the results are never LinkedIn-only. Drops listing pages, closed or paywalled jobs, duplicates and wrong locations, and **anything outside your posting window or without a verifiable posting date**. Scores each job 1–5 against your CV (with the gaps, honestly) and opens it to confirm it's still accepting applications. | roles, locations, **how recent**, platforms, how many |
+| 2. **Contacts** | Finds named recruiters, HR, talent and hiring managers and founders, plus generic hiring inboxes, **only from public pages**, each with its source and a verification status. If the job post has no HR or recruiter email, it **searches the company by name and checks its own website** (careers, contact, about, team pages) before giving up. Never guesses an address. | jobs only / + contacts / + contacts and outreach |
 | 3. **Prepare** | Builds your applicant profile from your CV, asks once for anything missing, and writes a cover letter and answers per job. | – |
 | 4. **Outreach** | Writes one email per verified contact (own subject, own body), creates Gmail drafts or sends with approval, and records every Gmail id. | contacts only / in chat / **Gmail drafts** / approve each / capped auto |
 | 5. **Apply** *(optional)* | Fills application forms in a browser, and hands back to you for logins, CAPTCHAs and uploads. | ask before each submit / auto when covered / fill only |
 | 6. **Report** | An Excel tracker (Leads, Contacts, Applications, Run Log, Excluded) plus a status table. | – |
 
 **Clients mode** does the same for agencies and freelancers: companies hiring developers become **sales leads**, with decision-maker contacts and B2B emails. B2B emails are **never** sent automatically.
+
+**What a real run looks like** (live test, 17 Nov 2026: AI Engineer + Flutter Developer, Lahore + Remote, last 7 days, 5 jobs): 3 searches → 37 results → 5 verified open jobs posted in the window, a tailored letter for each, 1 published hiring inbox found (the other companies publish none) → 1 Gmail draft. Opening each page mattered: 6 jobs that looked open in search were expired or closed, including one shown as "5 days ago" that was posted 9 months earlier.
+
+**n8n-style search check** (same day, 7-day window, AI Engineer + Flutter Developer, Lahore + Remote): 6 board searches, 3 jobs saved and page-checked. One came from Hired.pk ("6 hours ago"), one from Remotive and one from Taraki. 14 expired listings and 9 out-of-window listings were dropped, and 7 good matches had no date anywhere. Two changes came out of this test:
+- Dated boards are now searched with this month's date words. On Rozee, the plain query had returned 2023–2025 pages; the dated query put this month's listings first.
+- Titles like "AI/ML Engineer" now count as *AI Engineer*.
 
 **The guarantees:** the window is never widened to hit a number · no invented jobs, dates, contacts or experience · emails only to verified, published addresses · never the same email twice, even across runs · nothing is sent or submitted outside the mode you chose · Claude never claims an email was sent without Gmail's confirmation.
 
@@ -137,6 +145,7 @@ Claude Code discovers these automatically from the project folder:
 |---|---|
 | Skill doesn't appear | Upload the **zip**, not a folder; its top folder must be `jword/` with `SKILL.md` inside. |
 | Skill doesn't trigger | Check it's toggled on, start a **new** chat, and say *"Use Jword …"*. |
+| It didn't ask the questions / found nothing | You're probably on an old upload. Delete Jword in Customize → Skills and upload the latest `dist/jword.zip` (Jword v3.1+ always asks first and uses date-aware searches). |
 | "Jword needs web search" | Turn on Web search in the chat's tools menu. |
 | No Gmail drafts | Connect Gmail (Settings → Connectors). Until then Jword writes the emails in chat and in the tracker. |
 | No Excel file | Turn on *Code execution and file creation*. |
@@ -144,7 +153,9 @@ Claude Code discovers these automatically from the project folder:
 | `/jword` not found in Claude Code | Check `.claude/skills/jword/SKILL.md` exists. If you also uploaded Jword in Claude chat, the account copy syncs into Claude Code too, so keep only one (disable the uploaded one, or delete the project copy). |
 | Wrong folder structure | Don't move files. The source is `skill/jword/`; `tools/build_skill.py` creates `.claude/skills/jword/` and `dist/jword.zip`. |
 | Zip seems out of date | Run `python3 tools/build_skill.py --check`; rebuild with `python3 tools/build_skill.py`. |
-| Fewer jobs than asked | Expected when the window is short: Jword never widens it. The Excluded sheet shows why each job was dropped. Try a longer window or more locations. |
+| Fewer jobs than asked | Expected when the window is short: Jword never widens it. The Excluded sheet shows why each job was dropped. Try a longer window (14 or 30 days), more locations, or "Remote job boards". You can also allow undated jobs in a separate list: Greenhouse, Lever and `jobs.workable.com` pages show no posting date, and neither do most LinkedIn hiring posts. |
+| No LinkedIn job pages | LinkedIn's job pages (`/jobs/view/…`) aren't in Claude's web search. Jword searches **LinkedIn hiring posts** instead ("We're hiring… send your CV to …"). These often include an email but rarely a date, so allow undated jobs in a separate list to keep them. |
+| No emails found | Normal for many companies: they publish only an application form. Jword never guesses addresses; your letters are still in the Applications sheet. |
 
 ---
 

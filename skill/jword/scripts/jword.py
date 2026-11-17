@@ -93,24 +93,174 @@ PLATFORMS = {
     "Wellfound": ("wellfound", lambda src, d: d == "wellfound.com"),
     "Built In": ("builtin", lambda src, d: src == "Built In"),
     "Company career pages": ("careers page", lambda src, d: d in ATS or src == d),   # employer's own site / ATS
+    "Remote job boards": ("remotive", lambda src, d: d in REMOTE_BOARDS),
 }
+REMOTE_BOARDS = {"remotive.com", "arc.dev", "dailyremote.com", "weworkremotely.com", "remoteok.com", "remoteok.io",
+                 "himalayas.app", "workingnomads.com", "jobicy.com", "remoterocketship.com", "remoteleaf.com",
+                 "dynamitejobs.com", "wellfound.com", "remote.co", "justremote.co"}
 
+# Live tests (Nov 2026): short, plain queries with a recency phrase ("posted 2 days ago") return dated
+# postings from boards that print dates (Remotive, Wellfound, Arc, Built In, DailyRemote, local boards).
+# Long "remote-first startup ..." wording returned mostly paywalled aggregators and undated pages.
 QUERY_STYLES = [
-    "{role} job {loc} hiring {month}",
-    '"{role}" {loc} vacancy apply {year}',
-    "{role} {loc} careers job opening {month}",
-    "{role} jobs {loc} posted this week",
-    '"{role}" {loc} "apply now" {year}',
+    "{role} jobs {loc} posted {recent}",
+    "{role} job {loc}",
+    "{role} {loc} hiring {recent}",
+    "{role} vacancy {loc} {month}",
+    "{role} jobs in {loc} apply {recent}",
 ]
-# For "Remote": plain "<role> remote job" queries return mostly paywalled remote-job aggregators
-# (live test, Nov 2026); remote-first wording surfaces real employers and their ATS pages.
 REMOTE_QUERY_STYLES = [
-    "remote-first startup hiring {role} work from anywhere apply",
-    "{role} remote-first company careers apply Ashby Lever Greenhouse",
-    '"{role}" fully remote team hiring {month}',
-    "{role} 100% remote role apply now {year}",
-    "{role} distributed team remote worldwide job opening",
+    "{role} remote job posted {recent}",
+    "remote {role} jobs {recent}",
+    "{role} remote worldwide job {month}",
+    "{role} work from anywhere job posted {recent}",
+    "{role} remote job apply now {year}",
 ]
+
+
+# Board-scoped search, ported from the n8n workflow: each chosen board is searched with a site: filter,
+# the board with the fewest saved jobs is served next, and a board that stops producing is marked dry.
+# Live tests (Nov 2026): site: works in Claude's web search for rozee.pk, greenhouse.io, workable.com and
+# others; LinkedIn *job pages* are not in its index, but site:linkedin.com returns LinkedIn *hiring posts*
+# (often with an apply email). No API keys: only Claude's own search and fetch.
+BOARD_CATALOG = {
+    "open_web":   {"label": "Open web", "site": "", "weight": 1.2},
+    "linkedin":   {"label": "LinkedIn hiring posts", "site": "linkedin.com", "weight": 1.4},
+    "greenhouse": {"label": "Greenhouse", "site": "greenhouse.io", "weight": 1.0},
+    "lever":      {"label": "Lever", "site": "jobs.lever.co", "weight": 1.0},
+    "workable":   {"label": "Workable", "site": "workable.com", "weight": 1.0},
+    "ashby":      {"label": "Ashby", "site": "jobs.ashbyhq.com", "weight": 0.8},
+    "indeed":     {"label": "Indeed", "site": "indeed.com", "weight": 1.0},
+    "wellfound":  {"label": "Wellfound", "site": "wellfound.com/jobs", "weight": 1.0},
+    "builtin":    {"label": "Built In", "site": "builtin.com/job", "weight": 1.0},
+    "remotive":   {"label": "Remotive", "site": "remotive.com/remote/jobs", "weight": 1.0},
+    "arc":        {"label": "Arc", "site": "arc.dev/remote-jobs", "weight": 0.8},
+    "dailyremote": {"label": "DailyRemote", "site": "dailyremote.com/remote-job", "weight": 0.8},
+    "weworkremotely": {"label": "We Work Remotely", "site": "weworkremotely.com/remote-jobs", "weight": 0.8},
+}
+REGIONAL_BOARDS = {          # country -> boards that print dates and are in the search index
+    "pakistan": [("rozee", "Rozee.pk", "rozee.pk"), ("hiredpk", "Hired.pk", "hired.pk/jobs"),
+                 ("taraki", "Taraki", "jobs.taraki.co/jobs")],
+    "uae": [("bayt_ae", "Bayt", "bayt.com")], "saudi arabia": [("bayt_sa", "Bayt", "bayt.com")],
+    "qatar": [("bayt_qa", "Bayt", "bayt.com")], "egypt": [("wuzzuf", "Wuzzuf", "wuzzuf.net/jobs")],
+    "india": [("naukri", "Naukri", "naukri.com/job-listings")],
+    "united kingdom": [("reed", "Reed", "reed.co.uk/jobs"), ("totaljobs", "Totaljobs", "totaljobs.com/job")],
+    "germany": [("stepstone", "StepStone", "stepstone.de/stellenangebote")],
+    "united states": [("builtin_us", "Built In", "builtin.com/job")],
+}
+PLATFORM_BOARDS = {
+    "Company career pages": ["greenhouse", "lever", "workable", "ashby"], "Greenhouse": ["greenhouse"],
+    "Lever": ["lever"], "Ashby": ["ashby"], "Workable": ["workable"], "LinkedIn": ["linkedin"],
+    "Indeed": ["indeed"], "Wellfound": ["wellfound"], "Built In": ["builtin"],
+    "Remote job boards": ["remotive", "arc", "dailyremote", "weworkremotely"],
+}
+BOARD_DRY_AFTER = 2          # searches in a row with nothing new -> the board is dry
+
+
+def country_of(loc: str) -> str:
+    l = (loc or "").lower()
+    for country, (names, cities) in LOCATION_GROUPS.items():
+        if any(n in l for n in names + cities):
+            return country
+    return ""
+
+
+def build_boards(cfg) -> list:
+    """The boards this run searches, in priority order, each with the locations it serves."""
+    plats = cfg.get("platforms") or []
+    locs = cfg["locations"]
+    boards, seen = [], set()
+
+    def add(key, label=None, site=None, weight=1.0, only=None, dated=False):
+        if key in seen:
+            return
+        seen.add(key)
+        base = BOARD_CATALOG.get(key, {})
+        boards.append({"name": key, "label": label or base.get("label", key), "site": base.get("site", "") if site is None else site,
+                       "weight": base.get("weight", weight), "locs": only, "searches": 0, "dry_streak": 0,
+                       "dated": dated})
+
+    if plats:
+        for pl in plats:
+            for k in PLATFORM_BOARDS.get(pl, []):
+                add(k)
+        if not cfg.get("platforms_only"):
+            add("open_web")
+    else:                                            # "Anywhere": open web + LinkedIn posts + regional + ATS
+        add("open_web")
+        add("linkedin")
+        for loc in locs:
+            for key, label, site in REGIONAL_BOARDS.get(country_of(loc), []):
+                if key in seen:
+                    boards[[b["name"] for b in boards].index(key)]["locs"].append(loc)
+                else:
+                    add(key, label, site, 1.1, [loc], dated=True)
+        add("greenhouse")
+        add("workable")
+        add("lever")
+        if any(is_remote(l) or is_anywhere(l) for l in locs):
+            add("remotive")
+            add("dailyremote")
+    return boards
+
+
+def board_saved(st, name) -> int:
+    return sum(1 for c in st["candidates"] if c.get("board") == name and c["status"] in ("saved", "ready") + IN_FLIGHT)
+
+
+def board_dry(st, b) -> bool:
+    if b["dry_streak"] >= BOARD_DRY_AFTER:
+        return True
+    pending = any(c.get("board") == b["name"] and c["status"] in ("queued", "ready") + IN_FLIGHT for c in st["candidates"])
+    return b["searches"] >= 4 and board_saved(st, b["name"]) == 0 and not pending
+
+
+def pick_board(st, loc: str = "") -> dict:
+    """Serve the board furthest behind its share (weighted), skipping dry ones; reset if all are dry.
+    Only boards that serve `loc` are considered (regional boards serve their own country)."""
+    boards = st.setdefault("boards", build_boards(st["config"]))
+    serving = [b for b in boards if not b.get("locs") or loc in b["locs"]] or boards
+    live = [b for b in serving if not board_dry(st, b)]
+    if not live:
+        for b in serving:
+            b["dry_streak"] = 0
+        live = serving
+    order = {b["name"]: i for i, b in enumerate(boards)}
+    return min(live, key=lambda b: (board_saved(st, b["name"]) / b["weight"], b["searches"] / b["weight"], order[b["name"]]))
+
+
+def date_hints(cfg) -> list:
+    """Month words that dated job boards print on every listing ("Posting Date: Nov 09, 2026").
+    Anchoring a site: query on them makes the search index return this month's listings, with the
+    date in the snippet, instead of years-old pages (measured on Rozee: 1 dated hit -> 3 of the first 3)."""
+    w = cfg.get("window")
+    end = dt.date.fromisoformat(w["end"]) if w else dt.date.today()
+    start = dt.date.fromisoformat(w["start"]) if w else end - dt.timedelta(days=30)
+    months, d = [], end
+    while (d.year, d.month) >= (start.year, start.month) and len(months) < 2:
+        mon = d.strftime("%b")
+        months.append(f'"{mon}" "{d.year}"')
+        d = d.replace(day=1) - dt.timedelta(days=1)
+    return months
+
+
+def recency_phrases(cfg) -> list:
+    """Words that make search engines prefer fresh postings, matched to the user's window."""
+    w = cfg.get("window")
+    if not w:
+        return ["this month", "this week", "recently"]
+    days = (dt.date.fromisoformat(w["end"]) - dt.date.fromisoformat(w["start"])).days
+    if days <= 1:
+        return ["today", "hours ago", "1 day ago"]
+    if days <= 3:
+        return ["2 days ago", "today", "yesterday"]
+    if days <= 7:
+        return ["2 days ago", "this week", "5 days ago"]
+    if days <= 14:
+        return ["this week", "1 week ago", "10 days ago"]
+    return ["this week", "2 weeks ago", "this month"]
+
+
 CLOSED_PHRASES = [
     "no longer accepting applications", "no longer accepting", "job is no longer available",
     "job no longer available", "no longer available", "this job has expired", "job has expired",
@@ -220,8 +370,27 @@ STOP = set(("and the for with from that this are you your our will have has who 
 # ============================================================================ helpers
 
 
+_CAPTURE = None
+
+
 def out(obj):
+    if _CAPTURE is not None:
+        _CAPTURE.append(obj)
+        return
     print(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+def with_next(args, result: dict):
+    """Print `result` plus what `next` says, so Claude needs one command per step instead of two."""
+    global _CAPTURE
+    _CAPTURE = []
+    try:
+        cmd_next(args)
+    finally:
+        nxt, _CAPTURE = (_CAPTURE[0] if _CAPTURE else {}), None
+    result.pop("next", None)
+    result["next_action"] = nxt
+    out(result)
 
 
 def fail(msg):
@@ -244,6 +413,25 @@ def split_list(value: str, slash: bool = False) -> list[str]:
 def words(s: str) -> list[str]:
     toks = [w.rstrip(".") for w in re.split(r"[^a-z0-9+#.]+", str(s or "").lower())]
     return [w for w in toks if len(w) >= 3 and w not in STOP]
+
+
+ROLE_SYNONYMS = {"ai": r"(?:ai|artificial intelligence|genai|gen ai)", "ml": r"(?:ml|machine learning)",
+                 "js": r"(?:js|javascript)", "ui": r"(?:ui|user interface)", "ux": r"(?:ux|user experience)"}
+
+
+def role_matchers(roles) -> list:
+    """Patterns that recognise a role in a title/snippet even when written differently:
+    'AI Engineer' also matches 'AI/ML Engineer', 'AI & ML Engineer', 'Artificial Intelligence Engineer'."""
+    pats = []
+    for r in roles:
+        toks = re.findall(r"[a-z0-9+#]+", str(r).lower())
+        if not toks:
+            continue
+        alts = [ROLE_SYNONYMS.get(t, re.escape(t)) + r"(?![a-z0-9])" for t in toks]
+        gap = r"(?:[^a-z0-9.]|(?<![a-z0-9])[a-z0-9]{1,12}[^a-z0-9.]){0,5}?"
+        pats.append(re.compile(r"(?<![a-z0-9])" + gap.join(alts)))
+        pats.extend(re.compile(r"(?<![a-z0-9])" + re.escape(w)) for w in words(r))   # distinctive words: 'flutter'
+    return pats
 
 
 def dedupe_slug(s: str) -> str:
@@ -339,7 +527,9 @@ def parse_date(txt: str):
 # when its ORIGINAL posting date is known to fall inside it. "Updated / reposted / reviewed" dates are not
 # posting dates; they only prove the job is at least that old (so they can rule a job out, never in).
 
-UPDATED_WORDS = re.compile(r"(updated|reposted|re-posted|refreshed|reviewed|modified|edited|bumped|renewed)\W*$", re.I)
+UPDATED_WORDS = re.compile(r"(updated|reposted|re-posted|refreshed|reviewed|modified|edited|bumped|renewed|active|last seen)\W*$", re.I)
+UNIT_ALIASES = {"m": "minute", "min": "minute", "mins": "minute", "h": "hour", "hr": "hour", "hrs": "hour", "d": "day",
+                "w": "week", "wk": "week", "wks": "week", "mo": "month", "mos": "month", "y": "year", "yr": "year"}
 POSTED_LABELS = r"(?:first seen|first indexed|date posted|posted on|posted|published on|published|listed on|listed|created|opened|date|reposted|re-posted|updated|last updated|reviewed|refreshed|modified)"
 WINDOW_PRESETS = {"24h": 1, "1d": 1, "day": 1, "today": 0, "3d": 3, "7d": 7, "week": 7, "14d": 14,
                   "30d": 30, "month": 30, "60d": 60}
@@ -416,10 +606,22 @@ def parse_window(spec: str, today: dt.date) -> dict | None:
          "'last 10 days', 'this week', or a range like 2026-11-01..2026-11-10.")
 
 
+SIDEBAR_RE = re.compile(r"\b(similar|related|other|more|recommended|recent|latest)\s+(remote\s+)?(jobs|positions|openings|roles|job titles)\b"
+                        r"|\bsimilar openings at\b|\bview all\b.{0,20}\bjobs\b"
+                        r"|\bjobs you may like\b|\bpeople also viewed\b|\bexplore related\b", re.I)
+
+
+def main_text(text: str) -> str:
+    """Drop 'Similar jobs' / 'Related jobs' sidebars: their dates belong to other postings (live test)."""
+    t = str(text or "")
+    m = SIDEBAR_RE.search(t)
+    return t[:m.start()] if m and m.start() > 0 else t
+
+
 def estimate_posting(text: str, today: dt.date | None = None, assume_posted: bool = False):
     """Find a posting date in text. Returns {min, max (days ago; max None = unbounded), text, kind} or None.
     kind = 'posted' (original posting date) or 'updated' (reposted / updated / reviewed date)."""
-    t = str(text or "")
+    t = main_text(text)
     today = today or dt.date.today()
     found = []
 
@@ -434,8 +636,12 @@ def estimate_posting(text: str, today: dt.date | None = None, assume_posted: boo
     if m:
         d = dt.date.fromisoformat(m.group(1))
         found.append((-1, {"min": (today - d).days, "max": (today - d).days, "text": m.group(1), "kind": "posted"}))
-    for m in re.finditer(r"(\d+)(\+)?\s*(minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago", t, re.I):
-        n, plus, unit = int(m.group(1)), m.group(2), m.group(3).lower()
+    rel = (r"\b(\d+|an?|one)(\+)?\s*(minutes?|mins?|hours?|hrs?|days?|weeks?|wks?|months?|mos?|years?|yrs?|m|h|d|w|mo|y)\b"
+           r"(?:,?\s*(?:and\s+)?\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|h|m|d))?\s+ago\b")
+    for m in re.finditer(rel, t, re.I):
+        n = 1 if m.group(1).lower() in ("a", "an", "one") else int(m.group(1))
+        plus, unit = m.group(2), m.group(3).lower()
+        unit = UNIT_ALIASES.get(unit, UNIT_ALIASES.get(unit.rstrip("s"), unit))
         if unit.startswith(("minute", "min")):
             lo, hi = 0, 0
         elif unit.startswith(("hour", "hr")):
@@ -453,7 +659,20 @@ def estimate_posting(text: str, today: dt.date | None = None, assume_posted: boo
         found.append((m.start(), {"min": lo, "max": hi, "text": m.group(0), "kind": kind_at(m.start())}))
     for m in re.finditer(r"\b(just now|just posted|posted today|today|new today)\b", t, re.I):
         found.append((m.start(), {"min": 0, "max": 0, "text": m.group(0), "kind": kind_at(m.start())}))
-    for m in re.finditer(r"\byesterday\b", t, re.I):
+    for m in re.finditer(r"\b(\d{1,2})(h|d|w|mo)\s*[•·]", t):          # LinkedIn post age: "2d •", "1w ·"
+        n, u = int(m.group(1)), m.group(2)
+        lo, hi = {"h": (0, 1), "d": (n, n), "w": (n * 7, n * 7 + 6), "mo": (n * 28, n * 30 + 29)}[u]
+        found.append((m.start(), {"min": lo, "max": hi, "text": m.group(0).strip(" •·"), "kind": "posted"}))
+    for m in re.finditer(r"\b(?:posted\s+)?(last|this|a)\s+(week|month|year)\b(?!\s+(?:to|until))", t, re.I):
+        rel_, unit = m.group(1).lower(), m.group(2).lower()
+        if rel_ == "this":
+            lo, hi = 0, {"week": 6, "month": 30, "year": 365}[unit]
+        else:                                        # "last week", "a month ago"-style vague wording
+            lo, hi = {"week": (7, 13), "month": (28, 60), "year": (365, None)}[unit]
+        if not re.search(r"ago|posted", t[m.start():m.end() + 4], re.I) and rel_ == "a":
+            continue
+        found.append((m.start(), {"min": lo, "max": hi, "text": m.group(0), "kind": kind_at(m.start())}))
+    for m in re.finditer(r"\b(yesterday|yday)\b", t, re.I):
         found.append((m.start(), {"min": 1, "max": 1, "text": m.group(0), "kind": kind_at(m.start())}))
     for m in re.finditer(r"\b(" + POSTED_LABELS + r")[:\s]*(?:on\s+)?" + DATE_RX, t, re.I):
         d = parse_date(m.group(2))
@@ -638,12 +857,16 @@ def email_type(email: str) -> str:
 def apply_via(c: dict) -> str:
     """How this job is applied for (decides whether Claude may fill the form)."""
     d = domain_of(c["url"])
+    if d == "linkedin.com" and "/jobs/" not in c["url"] and any(e.get("source") == c["url"] for e in c.get("emails", [])):
+        return "Email (from LinkedIn hiring post)"
     if d in NO_AUTOMATION:
         return f"{NO_AUTOMATION[d]} (apply yourself)"
     if d in ATS:
         return ATS[d]
     if any(e["source"] == c["url"] for e in c.get("emails", [])) and re.search(r"\b(send|email) (your )?(cv|resume|application)", c.get("snippet", ""), re.I):
         return "Email"
+    if not looks_like_company_site(c, d) and c.get("source"):
+        return f"Via {c['source']} listing"           # a job board, not the employer's own site
     return "Company site"
 
 
@@ -681,6 +904,17 @@ def best_email(c: dict) -> str:
     return sorted(em, key=rank)[0]["email"]
 
 
+def looks_like_company_site(c: dict, domain: str) -> bool:
+    """True if the domain plausibly belongs to the company (a name token appears in it).
+    Stops job boards (taraki.co, dailyremote.com, qureos.com) being taken for the employer's site."""
+    d = re.sub(r"[^a-z0-9]", "", (domain or "").split(".")[0].lower())
+    toks = [t for t in re.findall(r"[a-z0-9]+", (c.get("company") or "").lower())
+            if len(t) >= 3 and t not in ("the", "inc", "ltd", "llc", "pvt", "private", "limited", "technologies", "tech",
+                                         "solutions", "software", "group", "company", "labs", "client", "named", "not")]
+    joined = re.sub(r"[^a-z0-9]", "", (c.get("company") or "").lower())
+    return bool(d) and (any(t in d for t in toks) or (len(joined) >= 4 and joined[:12] in d))
+
+
 def email_verification(c: dict, email: str, source: str, from_posting: bool) -> str:
     """Where the address was published decides how far it can be trusted (and whether it may be emailed)."""
     edom = email.split("@")[-1].lower()
@@ -688,6 +922,8 @@ def email_verification(c: dict, email: str, source: str, from_posting: bool) -> 
     site = (c.get("website") or "").lower()
     if from_posting:
         return "Verified: in the job post"
+    if sdom in ATS:                     # the company's own ATS page (Greenhouse, Lever, ...)
+        return "Verified: company ATS page"
     if sdom and (sdom == edom or sdom.endswith("." + edom) or edom.endswith("." + sdom)):
         return "Verified: company website"
     if site and (sdom == site or sdom.endswith("." + site)):      # published on the company's own site
@@ -774,9 +1010,14 @@ def known_keys(st) -> set:
     return keys   # a job already judged low-fit or closed isn't re-reviewed when another board copies it
 
 
-def source_cap(st) -> int:
+LINKEDIN_SHARE = 0.4      # LinkedIn may supply up to ~40% of the jobs (others ~33%): a priority, not a monopoly
+
+
+def source_cap(st, src: str = "") -> int:
     """Most leads one website may supply, so results stay varied (lifted when nothing else is left)."""
-    return max(2, math.ceil(st["config"]["target"] / 3))
+    target = st["config"]["target"]
+    base = max(2, math.ceil(target / 3))
+    return max(base, math.ceil(target * LINKEDIN_SHARE)) if src == "LinkedIn" else base
 
 
 def source_load(st, src) -> int:
@@ -825,7 +1066,8 @@ def route(st, c):
         c["status"] = "needs_open_check"
         return
     if c.get("open_check") is None:
-        c["open_check"] = "Snippet only" if cfg["verify_open"] else "Not checked"
+        c["open_check"] = ("Snippet only (LinkedIn pages aren't opened)" if "linkedin.com" in c["url"]
+                           else "Snippet only") if cfg["verify_open"] else "Not checked"
     if not date_gate(st, c):
         return
     if cfg["mode"] == "clients" and cfg["agencies"] == "skip" and not str(c.get("company") or "").strip():
@@ -878,19 +1120,19 @@ def save_lead(st, c):
     st["saved"] += 1
     st["saved_by_source"][c["source"]] = st["saved_by_source"].get(c["source"], 0) + 1
     st["consecutive_misses"] = 0
+    st["dry_searches"] = 0
 
 
 def promote(st, final=False):
     """Release qualified ('ready') leads, best score first, within the per-source cap
     (final=True ignores the cap so the target can still be met when sources are scarce)."""
     target = st["config"]["target"]
-    cap = source_cap(st)
     while True:
         busy = sum(1 for c in st["candidates"] if c["status"] in IN_FLIGHT)
         if st["saved"] + busy >= target:
             return
         ready = [c for c in st["candidates"] if c["status"] == "ready"]
-        pick = [c for c in ready if final or source_load(st, c["source"]) < cap]
+        pick = [c for c in ready if final or source_load(st, c["source"]) < source_cap(st, c["source"])]
         if not pick:
             return
         c = max(pick, key=lambda c: ((c.get("fit_score") or 0), -source_load(st, c["source"])))
@@ -932,7 +1174,7 @@ def cmd_init(args):
             "strict_location": args.location_filter == "strict", "agencies": agencies,
             "platforms": platforms, "platforms_only": bool(args.platforms_only and platforms),
             "target": target, "run_by": args.run_by or "",
-            "max_searches": min(40, target * 2 + len(roles) * len(locations) + 2),
+            "max_searches": min(36, math.ceil(target * 2.5) + len(roles) * len(locations) + 2),
             "max_misses": max(30, target * 4),
         },
         "saved": 0, "saved_by_source": {}, "searches": 0, "query_index": 0, "consecutive_misses": 0,
@@ -976,23 +1218,39 @@ def cmd_init(args):
 
 
 def build_query(st) -> dict:
+    """Next search: pick a board (n8n-style balancing), then that board's next role x location and wording."""
     cfg = st["config"]
-    i = st["query_index"]
+    # global counter -> every role x location is covered in turn; then the neediest board serving it
     combos = [(r, l) for r in cfg["roles"] for l in cfg["locations"]]
-    role, loc = combos[i % len(combos)]
-    styles = REMOTE_QUERY_STYLES if is_remote(loc) else QUERY_STYLES
-    style = styles[(i // len(combos)) % len(styles)]
+    role, loc = combos[st["query_index"] % len(combos)]
+    b = pick_board(st, loc)
+    rnd = b["searches"] // max(1, len(combos))
     now = dt.datetime.now()
     loc_txt = "" if is_anywhere(loc) else ("remote" if is_remote(loc) else loc)
-    if st["consecutive_misses"] >= 15:          # stuck: plainest wording
-        style = ('"{role}" fully remote hiring careers page {year}' if is_remote(loc)
-                 else '"{role}" hiring {loc} careers {year}')     # plain wording; live tests showed bare
-                                                                 # "<role> job remote" returns paywalled aggregators
-    query = style.format(role=role, loc=loc_txt, month=now.strftime("%B %Y"), year=now.year)
-    plats = cfg.get("platforms") or []
-    if plats and (i % 2 == 1 or cfg.get("platforms_only")):      # steer every other search toward a chosen platform
-        query += " " + PLATFORMS[plats[(i // 2) % len(plats)]][0]
-    return {"role": role, "location": loc, "query": re.sub(r"\s+", " ", query).strip()}
+    recent = recency_phrases(cfg)[rnd % 3]
+    site = b.get("site") or ""
+    if b["name"] == "linkedin":
+        styles = ['site:linkedin.com "hiring" "{role}" {loc}', 'site:linkedin.com "we\'re hiring" {role} {loc} send CV',
+                  'site:linkedin.com {role} {loc} hiring {recent}', 'site:linkedin.com "{role}" {loc} job opening']
+    elif site and b.get("dated"):            # boards that print "Posting Date: Nov 09, 2026"
+        styles = ['site:{site} "{role}" {loc} {dated}', 'site:{site} {role} {loc} {dated}',
+                  'site:{site} "{role}" {loc} {recent}', 'site:{site} "{role}" {loc}']
+    elif site:
+        styles = ['site:{site} "{role}" {loc}', 'site:{site} "{role}" {loc} {recent}', 'site:{site} {role} {loc} hiring',
+                  'site:{site} {role} {loc}']
+    else:
+        styles = REMOTE_QUERY_STYLES if is_remote(loc) else QUERY_STYLES
+    style = styles[rnd % len(styles)]
+    if st.get("dry_searches", 0) >= 4:          # stuck: plainest wording, location (and date words) kept
+        style = ("site:{site} {role} {loc} {dated}" if b.get("dated") else "site:{site} {role} {loc}") if site \
+            else "{role} jobs {loc} {recent}"
+    hints = date_hints(cfg)
+    dated = hints[(rnd // 2) % len(hints)] if hints else ""
+    query = style.format(role=role, loc=loc_txt, site=site, month=now.strftime("%B %Y"), year=now.year, recent=recent,
+                         dated=dated)
+    b["searches"] += 1
+    return {"role": role, "location": loc, "board": b["name"], "board_label": b["label"],
+            "query": re.sub(r"\s+", " ", query.replace('""', "")).strip()}
 
 
 def on_platform(cfg, c) -> bool:
@@ -1014,7 +1272,10 @@ def cmd_next(args):
     if st["saved"] >= cfg["target"]:
         return done("target_reached", "Target number of leads saved.")
     out_of_searches = st["searches"] >= cfg["max_searches"]
-    out_of_luck = st["consecutive_misses"] >= cfg["max_misses"]
+    # n8n-style: stop on the search budget, or after many searches in a row that saved nothing.
+    # (Counting searches, not rejected results: one page of old listings must not end the run.)
+    max_dry = cfg.get("max_dry_searches") or max(12, 2 * len(st.get("boards") or []))
+    out_of_luck = st.get("dry_searches", 0) >= max_dry
     # Variety vs. cost: after a few searches, if enough qualified leads are already waiting,
     # let them through even if one website supplies more than its share.
     waiting = sum(1 for c in st["candidates"] if c["status"] in ("ready",) + IN_FLIGHT)
@@ -1064,9 +1325,8 @@ def cmd_next(args):
     # 2) AI mode: candidates waiting for Claude's verdict (best keyword score first, sources mixed)
     queued = [c for c in st["candidates"] if c["status"] == "queued"]
     if queued:
-        cap = source_cap(st)
-        fresh = [c for c in queued if source_load(st, c["source"]) < cap] or queued
-        fresh.sort(key=lambda c: (not on_platform(cfg, c), -(c.get("keyword_score") or 0)))
+        fresh = [c for c in queued if source_load(st, c["source"]) < source_cap(st, c["source"])] or queued
+        fresh.sort(key=lambda c: (not on_platform(cfg, c), c["source"] != "LinkedIn", -(c.get("keyword_score") or 0)))
         batch, per_src = [], {}
         for c in fresh:                                   # at most 2 per source in one batch
             if per_src.get(c["source"], 0) < 2:
@@ -1087,18 +1347,20 @@ def cmd_next(args):
         })
 
     if out_of_luck:
-        return done("retry_limit_reached", f"{cfg['max_misses']} results in a row did not produce a lead.")
+        return done("retry_limit_reached", f"{max_dry} searches in a row did not produce a lead.")
     if out_of_searches:
         return done("max_searches_reached", f"Used the search budget ({cfg['max_searches']} searches).")
 
     # 3) search
-    plan = build_query(st)
+    plan = st.get("pending_search") or build_query(st)   # idempotent: asking twice gives the same search
     st["pending_search"] = plan
     save(args, st)
     out({"action": "search", **plan,
-         "next": "web_search this exact query. Save ALL results as a JSON list of {title, url, snippet} "
-                 "(snippet = the text shown for that result, including any '3 days ago' / 'Posted …' / 'Closes …' "
-                 "text) and run `jword.py ingest --results <file>`. If the search fails, ingest []."})
+         "next": "web_search this exact query. Save one {title, url, snippet} per result that could be a SINGLE job "
+                 "posting (skip pages listing many jobs, and paywalled sites). Keep date text exactly ('Posted 2d ago', "
+                 "'5 days ago', 'Date: 6 hours ago', 'Updated ...'), company, location and any closed wording, but not "
+                 "dates from 'Similar jobs' lists. Then run `jword.py ingest --results <file>`: it prints the next "
+                 "action. If the search failed, ingest []."})
 
 
 def cmd_ingest(args):
@@ -1118,6 +1380,8 @@ def cmd_ingest(args):
             results = results.get("results") or results.get("web") or results.get("data") or []
         batches = [(None, results)]
     total = {}
+    issued_plan = st.get("pending_search") or {}
+    plan_by_qid = {q: dict(issued.get(q) or {}) for q, _ in batches if q}
     for qid, res in batches:
         if qid:
             issued.pop(qid, None)
@@ -1126,15 +1390,15 @@ def cmd_ingest(args):
             st["searches"] += 1
             st["query_index"] += 1
             st["pending_search"] = None
-        stats = ingest_batch(st, res if isinstance(res, list) else [])
+        plan = issued_plan if qid is None else plan_by_qid.get(qid, {})
+        stats = ingest_batch(st, res if isinstance(res, list) else [], plan.get("board", ""))
         for k, v in stats.items():
             total[k] = total.get(k, 0) + v
     save(args, st)
-    out({"ok": True, "stats": total, "searches": len(batches), "saved": st["saved"], "target": cfg["target"],
-         "next": "Run `jword.py next`."})
+    with_next(args, {"ok": True, "stats": total, "searches": len(batches), "saved": st["saved"], "target": cfg["target"]})
 
 
-def ingest_batch(st, results) -> dict:
+def ingest_batch(st, results, board: str = "") -> dict:
     cfg = st["config"]
     matcher = LocationMatcher(cfg["locations"])
     today = today_of(st)
@@ -1143,7 +1407,7 @@ def ingest_batch(st, results) -> dict:
                             "duplicate", "wrong_location", "agency", "low_fit", "queued_for_review", "qualified",
                             "outside_window", "paywalled")}
     stats["results"] = len(results)
-    role_words = {w for r in cfg["roles"] for w in (words(r) or [r.lower()])}
+    role_pats = role_matchers(cfg["roles"])
 
     for r in results:
         url = str(r.get("url") or r.get("link") or "").strip()
@@ -1151,7 +1415,7 @@ def ingest_batch(st, results) -> dict:
         snippet = re.sub(r"\s+", " ", str(r.get("snippet") or r.get("description") or "")).strip()
         text = f"{title} {snippet}"
         if (not url.startswith("http") or any(d in url.lower() for d in EXCLUDED_DOMAINS)
-                or is_listing(title, url) or not any(w in text.lower() for w in role_words)):
+                or is_listing(title, url) or not any(p.search(text.lower()) for p in role_pats)):
             stats["listing_or_irrelevant"] += 1
             continue
         if domain_of(url) in PAYWALL_DOMAINS or PAYWALL_HINTS.search(text):
@@ -1219,8 +1483,15 @@ def ingest_batch(st, results) -> dict:
             if c["key"]:
                 keys.add(c["key"])
 
+    st["dry_searches"] = st.get("dry_searches", 0) + 1     # reset whenever a lead is saved
     if stats["new"] == 0:
         st["consecutive_misses"] += 1
+    for b in st.get("boards", []):
+        if b["name"] == board:
+            b["dry_streak"] = 0 if stats["new"] else b["dry_streak"] + 1
+    for c in st["candidates"]:
+        if c.get("board") is None:
+            c["board"] = board
     return stats
 
 
@@ -1319,7 +1590,9 @@ def cmd_apply(args):
             else:
                 for f in ("company", "role", "location"):          # the page often names the employer
                     v = str(u.get(f) or "").strip()
-                    if v and not str(c.get(f) or "").strip():
+                    cur = str(c.get(f) or "").strip()
+                    # fill a blank, or replace a placeholder like "Acme (client not named)" with the real name
+                    if v and (not cur or re.search(r"not named|unknown|confidential|hidden|^\?$", cur, re.I)):
                         c[f] = v
                 if u.get("company") and not c.get("key"):
                     c["key"] = dedupe_key(cfg["mode"], c["company"], c["role"])
@@ -1349,8 +1622,7 @@ def cmd_apply(args):
         results.append({"id": c["id"], "status": c["status"], "outcome": c.get("outcome", "")})
 
     save(args, st)
-    out({"ok": not errors, "applied": results, "errors": errors, "saved": st["saved"],
-         "target": cfg["target"], "next": "Run `jword.py next`."})
+    with_next(args, {"ok": not errors, "applied": results, "errors": errors, "saved": st["saved"], "target": cfg["target"]})
 
 
 def saved_leads(st):
@@ -1391,13 +1663,15 @@ def cmd_plan(args):
     for c in saved_leads(st):
         status, nxt = lead_status(st, c)
         d = domain_of(c["url"])
-        site = c.get("website") or (d if d not in ATS and d not in NO_AUTOMATION and c["source"] == d else "")
+        site = c.get("website") or (d if d not in ATS and d not in NO_AUTOMATION and looks_like_company_site(c, d) else "")
         leads.append({"id": c["id"], "company": c.get("company"), "role": c.get("role"), "url": c["url"],
                       "posted": c.get("posted_date") or c.get("posted", ""),
                       "apply_via": apply_via(c), "website": site,
                       "emails": [e["email"] for e in c.get("emails", []) if e.get("email") and is_sendable(e)],
                       "unverified_emails": [e["email"] for e in c.get("emails", []) if e.get("email") and not is_sendable(e)],
-                      "contacts_checked": bool(c.get("contacts_checked")), "status": status, "next_step": nxt})
+                      "fit": c.get("fit_score"), "contacts_checked": bool(c.get("contacts_checked")),
+                      "contact_queries": [] if c.get("contacts_checked") else contact_queries(c),
+                      "status": status, "next_step": nxt})
     undated = [{"id": c["id"], "company": c.get("company"), "role": c.get("role"), "url": c["url"]}
                for c in st["candidates"] if c["status"] == "undated"]
     out({"mode": cfg["mode"], "window": cfg["posted"], "leads": leads, "undated_separate": undated,
@@ -1407,6 +1681,37 @@ def cmd_plan(args):
                   "to_email": [l["id"] for l in leads if l["emails"] and l["status"] in ("New", "To apply", "Prepared")]},
          "next": "Follow SKILL.md step 5 (ask the user what to do next), then references/contacts.md, "
                  "references/applying.md or references/outreach.md."})
+
+
+HIRING_LOCAL = re.compile(r"^(careers?|jobs?|hr|hiring|recruit\w*|talent|people|apply|cv|resumes?|join)\b", re.I)
+
+
+def has_hiring_contact(c) -> bool:
+    """A verified recruiter/HR person, or a verified hiring inbox (careers@, jobs@, hr@...)."""
+    for e in c.get("emails", []):
+        if not e.get("email") or not is_sendable(e):
+            continue
+        if e["type"].startswith("Named") and re.search(r"recruit|talent|hr\b|human|people|hiring|founder|ceo|cto", e.get("role") or "", re.I):
+            return True
+        if e["type"] == "Generic" and HIRING_LOCAL.match(e["email"].split("@")[0]):
+            return True
+    return False
+
+
+def contact_queries(c) -> list:
+    """Searches for the company's own HR/recruiter emails when the job post and board give none."""
+    co = (c.get("company") or "").strip()
+    co = re.sub(r"\s*\((client )?not named\)|\s*\(talent platform\)", "", co, flags=re.I).strip()
+    if not co:
+        return []
+    city = re.split(r"[,(]", c.get("location") or "")[0].strip()
+    city = "" if re.search(r"remote|anywhere|worldwide", city, re.I) else city
+    q = [f'"{co}" official website', f'"{co}" careers email', f'"{co}" HR email {city}'.strip(),
+         f'"{co}" recruiter OR "talent acquisition" OR "HR manager" {city}'.strip()]
+    site = c.get("website")
+    if site and site not in ATS:
+        q = [f"{site} careers", f"{site} contact", f'"@{site}" careers OR hr OR jobs OR recruiting'] + q[1:]
+    return q
 
 
 def cmd_contacts(args):
@@ -1419,14 +1724,19 @@ def cmd_contacts(args):
         fail(f"Could not read contacts JSON: {e}")
     if isinstance(updates, dict):
         updates = [updates]
-    added, refused = [], []
+    added, refused, incomplete = [], [], []
     for u in updates:
         c = cand(st, str(u.get("id", "")))
         if not c or c["status"] != "saved":
             refused.append({"id": u.get("id"), "why": "unknown or unsaved lead"})
             continue
         if u.get("website"):
-            c["website"] = domain_of(str(u["website"])) or str(u["website"])
+            wd = domain_of(str(u["website"])) or str(u["website"])
+            if wd == domain_of(c["url"]) and not looks_like_company_site(c, wd):
+                refused.append({"id": c["id"], "website": wd,
+                                "why": "that is the job board's site, not the company's; search for the company's own website"})
+            else:
+                c["website"] = wd
             for e in c.get("emails", []):                  # re-judge earlier addresses now the site is known
                 if not e["verification"].startswith("Verified: in the job post"):
                     e["verification"] = email_verification(c, e["email"], e["source"], False)
@@ -1452,9 +1762,21 @@ def cmd_contacts(args):
                 continue
             why = add_email(c, email, src, e.get("name"), e.get("role"), from_posting=(normalize_job_url(src) == c.get("nurl")))
             (refused.append({"id": c["id"], "email": email, "why": why}) if why else added.append({"id": c["id"], "email": email}))
-        c["contacts_checked"] = True
+        if u.get("website") or u.get("website_searched") or u.get("no_website"):
+            c["website_searched"] = True
+        # Done only when a hiring contact is found, or the company's own website was searched too.
+        if has_hiring_contact(c) or c.get("website_searched"):
+            c["contacts_checked"] = True
+        else:
+            incomplete.append({"id": c["id"], "company": c.get("company"),
+                               "why": "no verified HR/recruiter/careers email yet: search the company by name, open its own "
+                                      "website (careers, contact, about, team pages) and send this lead again with "
+                                      "website + any emails (or no_website: true if it has none)",
+                               "queries": contact_queries(c)})
     save(args, st)
-    out({"ok": True, "added": added, "refused": refused, "next": "Run `jword.py plan` to see what's left."})
+    out({"ok": True, "added": added, "refused": refused, "incomplete": incomplete,
+         "next": "Do the company-website step for every lead in `incomplete`, then run `contacts` again." if incomplete
+                 else "Run `jword.py plan` to see what's left."})
 
 
 def cmd_track(args):
@@ -1694,14 +2016,14 @@ def cmd_shards(args):
     workers, per = max(1, min(int(args.workers), 5)), max(1, min(int(args.per_worker), 6))
     left = max(0, cfg["max_searches"] - st["searches"] - len(st.get("issued", {})))
     combos = [(r, l) for r in cfg["roles"] for l in cfg["locations"]]
-    groups = {}
-    for _ in range(min(left, workers * per)):
+    groups = {f"w{k + 1}": [] for k in range(workers)}
+    for n in range(min(left, workers * per)):
         plan = build_query(st)
         st["query_index"] += 1
         qid = f"q{st['query_index']}"
         st.setdefault("issued", {})[qid] = plan
-        g = plan["location"] if len(cfg["locations"]) >= workers or len(combos) < workers else plan["role"]
-        groups.setdefault(g, []).append({"query_id": qid, "query": plan["query"]})
+        groups[f"w{n % workers + 1}"].append({"query_id": qid, "query": plan["query"], "board": plan["board_label"]})
+    groups = {k: v for k, v in groups.items() if v}
     packets = []
     for n, (g, qs) in enumerate(groups.items(), 1):
         packets.append({"shard": f"s{n}", "focus": g, "queries": qs, "window": cfg.get("window"),
@@ -1721,16 +2043,20 @@ def cmd_profile_check(args):
         prof = json.loads(p.read_text())
     except Exception as e:  # noqa: BLE001
         fail(f"Profile is not valid JSON: {e}")
-    missing = [k for k in PROFILE_REQUIRED if prof.get(k) in (None, "", [], {})]
     cv = str(prof.get("cv_path") or "").strip()
     has_cv = bool(cv) and Path(cv).exists()
+    writing = [k for k in ("full_name",) if prof.get(k) in (None, "", [], {})]
     if not (has_cv or (prof.get("experience") and prof.get("skills"))):
-        missing.append("cv_path (a CV file) or experience + skills")
-    out({"ok": not missing, "missing": missing, "cv_file": cv if has_cv else "",
+        writing.append("cv_path (a CV file) or experience + skills")
+    forms = [k for k in PROFILE_REQUIRED if prof.get(k) in (None, "", [], {}) and k not in writing]
+    out({"ok": not writing and not forms, "ready_for_writing": not writing, "ready_for_forms": not writing and not forms,
+         "missing_for_writing": writing, "missing_for_forms": forms, "missing": writing + forms,
+         "cv_file": cv if has_cv else "",
          "cv_upload_note": "" if has_cv else "No CV file: forms that require an upload will be marked 'Needs you: upload CV'.",
          "eeo": prof.get("eeo_answers", "ask"),
-         "next": "Ask the user for the missing fields (one message), save them, and run profile-check again."
-                 if missing else "Profile is ready for applying."})
+         "next": ("Ask the user for: " + ", ".join(writing) + " (needed before writing anything).") if writing else
+                 ("Write the cover letters and emails now. Ask for " + ", ".join(forms) + " only before filling forms.")
+                 if forms else "Profile is ready for writing and forms."})
 
 
 def cmd_report(args):
